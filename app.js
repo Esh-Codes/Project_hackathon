@@ -47,9 +47,8 @@ async function registerUser() {
   const name = document.getElementById('regName').value.trim();
   const email = document.getElementById('regEmail').value.trim();
   const password = document.getElementById('regPassword').value.trim();
-  const role = document.getElementById('regRole').value;
+  const role = document.getElementById('regRole').value.trim();  // ← Add .trim()
 
-  // VALIDATION: Check all fields
   if (!name || !email || !password) {
     showAlert('registerAlert', 'Fill all fields', 'error');
     return;
@@ -74,19 +73,21 @@ async function registerUser() {
     const uid = cred.user.uid;
 
     let userData = {
-      email, role, name,
+      email, 
+      role: role.trim(),  // ← Trim role here too
+      name,
       verified: role === 'alumni' ? false : true,
       createdAt: new Date()
     };
 
     if (role === 'alumni') {
-      userData.gradYear = document.getElementById('regGradYear').value;
-      userData.jobTitle = document.getElementById('regJobTitle').value;
-      userData.company = document.getElementById('regCompany').value;
+      userData.gradYear = document.getElementById('regGradYear').value.trim();
+      userData.jobTitle = document.getElementById('regJobTitle').value.trim();
+      userData.company = document.getElementById('regCompany').value.trim();
       userData.skills = document.getElementById('regSkills').value.split(',').map(s => s.trim()).filter(Boolean);
       userData.interests = document.getElementById('regInterests').value.split(',').map(i => i.trim()).filter(Boolean);
     } else if (role === 'student') {
-      userData.collegeId = document.getElementById('regCollegeId').value;
+      userData.collegeId = document.getElementById('regCollegeId').value.trim();
     }
 
     await db.collection('users').doc(uid).set(userData);
@@ -98,10 +99,11 @@ async function registerUser() {
 }
 
 
+
 async function loginUser() {
   const email = document.getElementById('loginEmail').value.trim();
   const password = document.getElementById('loginPassword').value.trim();
-  const role = document.getElementById('loginRole').value;
+  const selectedRole = document.getElementById('loginRole').value.trim();  // ← Add .trim()
 
   if (!email || !password) {
     showAlert('loginAlert', 'Fill all fields', 'error');
@@ -109,7 +111,7 @@ async function loginUser() {
   }
 
   // VALIDATION: Students MUST use college email
-  if (role === 'student') {
+  if (selectedRole === 'student') {
     if (!isCollegeEmail(email)) {
       showAlert('loginAlert', '❌ Students must login with college email', 'error');
       return;
@@ -122,21 +124,30 @@ async function loginUser() {
     
     if (!userDoc.exists) {
       await auth.signOut();
-      showAlert('loginAlert', 'User account not found', 'error');
+      showAlert('loginAlert', '❌ User account not found', 'error');
       return;
     }
 
-    if (userDoc.data().role !== role) {
+    const userData = userDoc.data();
+    const userRole = userData.role.trim();  // ← Trim stored role too
+
+    console.log('Login - Selected role:', selectedRole, 'User role:', userRole);
+
+    // Check if role matches
+    if (userRole !== selectedRole) {
       await auth.signOut();
-      showAlert('loginAlert', 'Wrong role selected. Please check!', 'error');
+      showAlert('loginAlert', `❌ Your account is registered as "${userRole}" but you selected "${selectedRole}". Please select the correct role!`, 'error');
       return;
     }
     
-    showAlert('loginAlert', '', 'success');
+    // Success - user logged in
+    showAlert('loginAlert', '✅ Login successful!', 'success');
   } catch (error) {
-    showAlert('loginAlert', error.message, 'error');
+    showAlert('loginAlert', '❌ ' + error.message, 'error');
   }
 }
+
+
 
 
 async function logoutUser() {
@@ -172,10 +183,18 @@ auth.onAuthStateChanged(async (user) => {
 
     updateUI();
     loadFeed();
+    
+    // Load chat alumni for students AFTER auth is complete
+    if (currentRole === 'student') {
+      setTimeout(() => loadChatAlumni(), 500);
+    }
+    
+    setupPresence();
   } catch (error) {
     console.error('Auth error:', error);
   }
 });
+
 
 // ==========================================
 // UI FUNCTIONS
@@ -431,69 +450,190 @@ document.getElementById('btnSaveProfile').addEventListener('click', async () => 
 // ==========================================
 
 async function startChat(alumniId, alumniName) {
+  if (!alumniId || !alumniName) {
+    alert('❌ Please select an alumni first');
+    return;
+  }
+
   currentChatWith = { id: alumniId, name: alumniName };
+  
+  // Update UI to show who we're chatting with
+  document.querySelector('.chat-box')?.parentElement.classList.add('active');
+  const chatHeader = document.querySelector('#chatView h2');
+  if (chatHeader) {
+    chatHeader.textContent = `💬 Chat with ${alumniName}`;
+  }
+  
   showView('chatView');
   loadChatMessages();
 }
+
 
 async function loadChatMessages() {
   if (!currentChatWith) return;
 
   const chatId = [currentUser.uid, currentChatWith.id].sort().join('_');
   const messagesEl = document.getElementById('chatMessages');
-  messagesEl.innerHTML = '';
+  messagesEl.innerHTML = `<p style="text-align:center; color:#999;">Loading messages...</p>`;
 
-  rtdb.ref(`messages/${chatId}`).on('child_added', (snap) => {
-    const msg = snap.val();
-    const div = document.createElement('div');
-    div.className = msg.senderId === currentUser.uid ? 'msg-sent' : 'msg-received';
-    div.innerHTML = `<p>${msg.text}</p><small>${new Date(msg.time).toLocaleTimeString()}</small>`;
-    messagesEl.appendChild(div);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-  });
+  try {
+    // Clear previous listeners
+    rtdb.ref(`messages/${chatId}`).off();
+
+    // Load existing messages
+    rtdb.ref(`messages/${chatId}`).once('value', (snap) => {
+      messagesEl.innerHTML = '';
+      const data = snap.val();
+      
+      if (!data) {
+        messagesEl.innerHTML = `<p style="text-align:center; color:#999;">No messages yet. Start the conversation!</p>`;
+      } else {
+        // Convert to array and sort by timestamp
+        const messages = Object.values(data).sort((a, b) => a.time - b.time);
+        messages.forEach(msg => {
+          const div = document.createElement('div');
+          div.className = msg.senderId === currentUser.uid ? 'msg-sent' : 'msg-received';
+          div.style.marginBottom = '10px';
+          div.style.padding = '8px 12px';
+          div.style.borderRadius = '8px';
+          div.style.maxWidth = '70%';
+          
+          if (msg.senderId === currentUser.uid) {
+            div.style.backgroundColor = '#2563eb';
+            div.style.color = 'white';
+            div.style.marginLeft = 'auto';
+            div.style.marginRight = '0';
+          } else {
+            div.style.backgroundColor = '#e5e7eb';
+            div.style.color = '#1f2937';
+            div.style.marginRight = 'auto';
+            div.style.marginLeft = '0';
+          }
+          
+          div.innerHTML = `<p style="margin:0; word-wrap:break-word;">${msg.text}</p><small style="opacity:0.8;">${new Date(msg.time).toLocaleTimeString()}</small>`;
+          messagesEl.appendChild(div);
+        });
+      }
+      
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    });
+
+    // Listen for new messages
+    rtdb.ref(`messages/${chatId}`).on('child_added', (snap) => {
+      const msg = snap.val();
+      const div = document.createElement('div');
+      div.className = msg.senderId === currentUser.uid ? 'msg-sent' : 'msg-received';
+      div.style.marginBottom = '10px';
+      div.style.padding = '8px 12px';
+      div.style.borderRadius = '8px';
+      div.style.maxWidth = '70%';
+      
+      if (msg.senderId === currentUser.uid) {
+        div.style.backgroundColor = '#2563eb';
+        div.style.color = 'white';
+        div.style.marginLeft = 'auto';
+        div.style.marginRight = '0';
+      } else {
+        div.style.backgroundColor = '#e5e7eb';
+        div.style.color = '#1f2937';
+        div.style.marginRight = 'auto';
+        div.style.marginLeft = '0';
+      }
+      
+      div.innerHTML = `<p style="margin:0; word-wrap:break-word;">${msg.text}</p><small style="opacity:0.8;">${new Date(msg.time).toLocaleTimeString()}</small>`;
+      messagesEl.appendChild(div);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    });
+
+  } catch (error) {
+    console.error('Error loading messages:', error);
+    messagesEl.innerHTML = `<p style="color:red;">Error: ${error.message}</p>`;
+  }
 }
+
 
 document.getElementById('btnSendMessage').addEventListener('click', async () => {
   if (!currentChatWith) {
-    alert('Select an alumni first');
+    alert('❌ Please select an alumni first');
     return;
   }
 
   const text = document.getElementById('chatInput').value.trim();
-  if (!text) return;
+  if (!text) {
+    alert('❌ Please type a message');
+    return;
+  }
 
-  const chatId = [currentUser.uid, currentChatWith.id].sort().join('_');
-  await rtdb.ref(`messages/${chatId}`).push({
-    senderId: currentUser.uid,
-    text,
-    time: Date.now()
-  });
+  try {
+    const chatId = [currentUser.uid, currentChatWith.id].sort().join('_');
+    await rtdb.ref(`messages/${chatId}`).push({
+      senderId: currentUser.uid,
+      senderName: currentUser.name,
+      text,
+      time: Date.now()
+    });
 
-  document.getElementById('chatInput').value = '';
+    document.getElementById('chatInput').value = '';
+  } catch (error) {
+    console.error('Error sending message:', error);
+    alert('❌ Error: ' + error.message);
+  }
 });
 
+
+// Load alumni list for chat
+// Load alumni list for chat
 // Load alumni list for chat
 async function loadChatAlumni() {
   const select = document.getElementById('chatSelect');
-  const snapshot = await db.collection('users')
-    .where('role', '==', 'alumni')
-    .where('verified', '==', true)
-    .get();
+  
+  try {
+    console.log('Loading alumni for chat...');
+    
+    // Clear previous options
+    select.innerHTML = '<option value="">-- Select Alumni --</option>';
 
-  snapshot.forEach(doc => {
-    const opt = document.createElement('option');
-    opt.value = doc.id;
-    opt.textContent = doc.data().name;
-    select.appendChild(opt);
-  });
+    const snapshot = await db.collection('users')
+      .where('role', '==', 'alumni')
+      .where('verified', '==', true)
+      .get();
 
-  select.addEventListener('change', () => {
-    if (select.value) {
-      const alumni = snapshot.docs.find(d => d.id === select.value).data();
-      startChat(select.value, alumni.name);
+    console.log('Found ' + snapshot.size + ' verified alumni');
+
+    if (snapshot.empty) {
+      const opt = document.createElement('option');
+      opt.textContent = '❌ No verified alumni available';
+      opt.disabled = true;
+      select.appendChild(opt);
+      return;
     }
-  });
+
+    snapshot.forEach(doc => {
+      const alumni = doc.data();
+      const opt = document.createElement('option');
+      opt.value = doc.id;
+      opt.textContent = `${alumni.name} - ${alumni.jobTitle || 'N/A'} @ ${alumni.company || 'N/A'}`;
+      select.appendChild(opt);
+      console.log('Added: ' + alumni.name);
+    });
+
+    // Add change event listener
+    select.addEventListener('change', function() {
+      if (this.value) {
+        const alumniId = this.value;
+        const alumniName = this.options[this.selectedIndex].text.split(' - ')[0];
+        console.log('Selected alumni: ' + alumniName);
+        startChat(alumniId, alumniName);
+      }
+    });
+
+  } catch (error) {
+    console.error('Error loading alumni:', error);
+    select.innerHTML = '<option disabled>❌ Error: ' + error.message + '</option>';
+  }
 }
+
+
 
 // ==========================================
 // OFFICE HOURS ROULETTE
@@ -571,85 +711,106 @@ document.getElementById('btnFindAlumni').addEventListener('click', async () => {
 // ==========================================
 
 async function loadAdmin() {
+   console.log('=== ADMIN PANEL LOADING ===');
+  console.log('Current user:', currentUser);
+  console.log('Current role:', currentRole);
+  
   const pendingAlumniDiv = document.getElementById('pendingAlumniList');
   const allPostsDiv = document.getElementById('pendingPostsList');
 
+  console.log('pendingAlumniDiv:', pendingAlumniDiv);
+  console.log('allPostsDiv:', allPostsDiv);
+
   try {
+    // ===== LOAD PENDING ALUMNI =====
+    console.log('Loading pending alumni...');
     const alumniSnapshot = await db.collection('users')
       .where('role', '==', 'alumni')
       .where('verified', '==', false)
       .get();
 
     pendingAlumniDiv.innerHTML = '';
+    
     if (alumniSnapshot.empty) {
-      pendingAlumniDiv.innerHTML = '<p style="color:#999;">No pending alumni</p>';
+      pendingAlumniDiv.innerHTML = '<p style="color:#999; text-align:center;">✅ No pending alumni</p>';
     } else {
+      console.log('Found ' + alumniSnapshot.size + ' pending alumni');
       alumniSnapshot.forEach(doc => {
         const alumni = doc.data();
         const div = document.createElement('div');
         div.className = 'card';
         div.innerHTML = `
           <h4>${alumni.name}</h4>
-          <p>${alumni.jobTitle} @ ${alumni.company}</p>
-          <button class="btn btn-primary" onclick="approveAlumni('${doc.id}')">Verify Alumni</button>
-          <button class="btn btn-danger" onclick="rejectAlumni('${doc.id}')">Reject</button>
+          <p><strong>${alumni.jobTitle || 'N/A'}</strong> @ ${alumni.company || 'N/A'}</p>
+          <p style="color:#666; font-size:12px;">Email: ${alumni.email}</p>
+          <div style="display:flex; gap:10px; margin-top:10px;">
+            <button class="btn btn-primary" onclick="approveAlumni('${doc.id}')">✅ Verify</button>
+            <button class="btn btn-danger" onclick="rejectAlumni('${doc.id}')">❌ Reject</button>
+          </div>
         `;
         pendingAlumniDiv.appendChild(div);
       });
     }
 
-    // NOW SHOWING ALL POSTS (for admin to reject irrelevant ones)
+    // ===== LOAD ALL POSTS =====
+    console.log('Loading all posts...');
     const postsSnapshot = await db.collection('posts')
       .orderBy('createdAt', 'desc')
       .get();
 
     allPostsDiv.innerHTML = '';
+    
     if (postsSnapshot.empty) {
-      allPostsDiv.innerHTML = '<p style="color:#999;">No posts</p>';
+      allPostsDiv.innerHTML = '<p style="color:#999; text-align:center;">✅ No posts</p>';
     } else {
+      console.log('Found ' + postsSnapshot.size + ' posts');
+      
       postsSnapshot.forEach(async doc => {
         const post = doc.data();
-        const authorDoc = await db.collection('users').doc(post.authorId).get();
-        const author = authorDoc.data();
+        
+        // Get author details
+        let authorName = 'Unknown Author';
+        try {
+          const authorDoc = await db.collection('users').doc(post.authorId).get();
+          if (authorDoc.exists) {
+            authorName = authorDoc.data().name;
+          }
+        } catch (error) {
+          console.error('Error loading author:', error);
+        }
         
         const div = document.createElement('div');
         div.className = 'card';
+        div.style.marginBottom = '15px';
+        
+        const statusBadge = post.approved ? '✅ Approved' : '⏳ Pending Review';
+        const statusColor = post.approved ? '#10b981' : '#f59e0b';
+        const statusBgColor = post.approved ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)';
+        
         div.innerHTML = `
-          <h4>${post.title}</h4>
-          <p style="color:#666; font-size:12px;">By <strong>${author.name}</strong> | ${post.type.toUpperCase()}</p>
-          <p>${post.description}</p>
-          <button class="btn btn-danger" onclick="rejectPost('${doc.id}')">❌ Delete (Irrelevant)</button>
+          <h4 style="margin-top:0;">${post.title}</h4>
+          <p style="color:#666; font-size:12px; margin:5px 0;">
+            By <strong>${authorName}</strong> | ${post.type.toUpperCase()}
+          </p>
+          <p style="color:#666; font-size:12px; margin:5px 0; padding:8px; background:${statusBgColor}; border-radius:6px; border-left:3px solid ${statusColor};">
+            <strong style="color:${statusColor};">${statusBadge}</strong>
+          </p>
+          <p style="margin:10px 0; line-height:1.5;">${post.description}</p>
+          <div style="display:flex; gap:10px; margin-top:10px;">
+            ${!post.approved ? `<button class="btn btn-primary" onclick="approvePost('${doc.id}')">✅ Approve</button>` : ''}
+            <button class="btn btn-danger" onclick="rejectPost('${doc.id}')">❌ Delete</button>
+          </div>
         `;
         allPostsDiv.appendChild(div);
       });
     }
-
   } catch (error) {
     console.error('Admin load error:', error);
+    pendingAlumniDiv.innerHTML = `<p style="color:red;">❌ Error: ${error.message}</p>`;
+    allPostsDiv.innerHTML = `<p style="color:red;">❌ Error: ${error.message}</p>`;
   }
 }
 
-async function approveAlumni(uid) {
-  await db.collection('users').doc(uid).update({ verified: true });
-  loadAdmin();
-}
-
-async function rejectAlumni(uid) {
-  await db.collection('users').doc(uid).delete();
-  loadAdmin();
-}
-
-async function approvePost(postId) {
-  await db.collection('posts').doc(postId).update({ approved: true });
-  loadAdmin();
-  loadFeed();
-}
-
-async function rejectPost(postId) {
-  await db.collection('posts').doc(postId).delete();
-  loadAdmin();
-  loadFeed();
-}
 
 // ==========================================
 // UTILITY FUNCTIONS
@@ -666,12 +827,7 @@ document.getElementById('btnLogout').addEventListener('click', logoutUser);
 document.getElementById('btnLogoutSidebar').addEventListener('click', logoutUser);
 
 // Initialize on load
-window.addEventListener('load', () => {
-  setupPresence();
-  if (currentRole === 'student') {
-    loadChatAlumni();
-  }
-});
+
 // ==========================================
 // EMAIL VALIDATION FUNCTION
 // ==========================================
@@ -679,13 +835,53 @@ window.addEventListener('load', () => {
 function isCollegeEmail(email) {
   // List of accepted college email domains
   const collegeEmailDomains = [
-    '@bvmengineering.ac.in',
-    '@bvm.ac.in',
-    '@bvmieu.ac.in',
-    '@bvmhs.ac.in'
+    '@bvmengineering.ac.in'
     // Add more college domains as needed
   ];
 
   // Check if email ends with any of the college domains
   return collegeEmailDomains.some(domain => email.toLowerCase().endsWith(domain));
+}
+async function approveAlumni(uid) {
+  try {
+    await db.collection('users').doc(uid).update({ verified: true });
+    alert('✅ Alumni verified!');
+    loadAdmin();
+  } catch (error) {
+    alert('❌ Error: ' + error.message);
+  }
+}
+
+async function rejectAlumni(uid) {
+  if (confirm('Are you sure? This will delete the user account.')) {
+    try {
+      await db.collection('users').doc(uid).delete();
+      alert('✅ Alumni rejected and deleted!');
+      loadAdmin();
+    } catch (error) {
+      alert('❌ Error: ' + error.message);
+    }
+  }
+}
+
+async function approvePost(postId) {
+  try {
+    await db.collection('posts').doc(postId).update({ approved: true });
+    alert('✅ Post approved!');
+    loadAdmin();
+  } catch (error) {
+    alert('❌ Error: ' + error.message);
+  }
+}
+
+async function rejectPost(postId) {
+  if (confirm('Are you sure? This will delete the post.')) {
+    try {
+      await db.collection('posts').doc(postId).delete();
+      alert('✅ Post deleted!');
+      loadAdmin();
+    } catch (error) {
+      alert('❌ Error: ' + error.message);
+    }
+  }
 }
