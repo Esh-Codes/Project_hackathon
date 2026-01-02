@@ -49,8 +49,23 @@ async function registerUser() {
   const password = document.getElementById('regPassword').value.trim();
   const role = document.getElementById('regRole').value;
 
+  // VALIDATION: Check all fields
   if (!name || !email || !password) {
     showAlert('registerAlert', 'Fill all fields', 'error');
+    return;
+  }
+
+  // VALIDATION: Students MUST use college email
+  if (role === 'student') {
+    if (!isCollegeEmail(email)) {
+      showAlert('registerAlert', '❌ Students must register with college email (e.g., yourname@bvmengineering.ac.in)', 'error');
+      return;
+    }
+  }
+
+  // VALIDATION: Password strength
+  if (password.length < 6) {
+    showAlert('registerAlert', 'Password must be at least 6 characters', 'error');
     return;
   }
 
@@ -75,12 +90,13 @@ async function registerUser() {
     }
 
     await db.collection('users').doc(uid).set(userData);
-    showAlert('registerAlert', 'Registered! Please login.', 'success');
+    showAlert('registerAlert', '✅ Registered! Please login.', 'success');
     setTimeout(() => switchTab('login'), 1500);
   } catch (error) {
     showAlert('registerAlert', error.message, 'error');
   }
 }
+
 
 async function loginUser() {
   const email = document.getElementById('loginEmail').value.trim();
@@ -92,19 +108,36 @@ async function loginUser() {
     return;
   }
 
+  // VALIDATION: Students MUST use college email
+  if (role === 'student') {
+    if (!isCollegeEmail(email)) {
+      showAlert('loginAlert', '❌ Students must login with college email', 'error');
+      return;
+    }
+  }
+
   try {
     const cred = await auth.signInWithEmailAndPassword(email, password);
     const userDoc = await db.collection('users').doc(cred.user.uid).get();
-    if (!userDoc.data().role === role) {
+    
+    if (!userDoc.exists) {
       await auth.signOut();
-      showAlert('loginAlert', 'Wrong role selected', 'error');
+      showAlert('loginAlert', 'User account not found', 'error');
       return;
     }
+
+    if (userDoc.data().role !== role) {
+      await auth.signOut();
+      showAlert('loginAlert', 'Wrong role selected. Please check!', 'error');
+      return;
+    }
+    
     showAlert('loginAlert', '', 'success');
   } catch (error) {
     showAlert('loginAlert', error.message, 'error');
   }
 }
+
 
 async function logoutUser() {
   await auth.signOut();
@@ -214,38 +247,75 @@ function showAlert(elementId, message, type) {
 // ==========================================
 // FEED FUNCTIONS
 // ==========================================
-
 async function loadFeed() {
   const container = document.getElementById('feedContainer');
   container.innerHTML = '<p style="text-align:center;">Loading...</p>';
 
   try {
     if (currentRole === 'student') {
-      const snapshot = await db.collection('users')
-        .where('role', '==', 'alumni')
-        .where('verified', '==', true)
+      // STUDENTS: Show approved posts only
+      const snapshot = await db.collection('posts')
+        .where('approved', '==', true)
+        .orderBy('createdAt', 'desc')
         .get();
 
       container.innerHTML = '';
       if (snapshot.empty) {
-        container.innerHTML = '<p style="text-align:center; color:#999;">No alumni found</p>';
+        container.innerHTML = '<p style="text-align:center; color:#999;">No approved posts yet</p>';
         return;
       }
 
-      snapshot.forEach(doc => {
-        const alumni = doc.data();
+      snapshot.forEach(async doc => {
+        const post = doc.data();
+        const authorDoc = await db.collection('users').doc(post.authorId).get();
+        const author = authorDoc.data();
+
         const card = document.createElement('div');
         card.className = 'card';
         card.innerHTML = `
-          <h3>${alumni.name}</h3>
-          <p><strong>${alumni.jobTitle || 'N/A'}</strong> @ ${alumni.company || 'N/A'}</p>
-          <p style="color:#666; font-size:12px;">Skills: ${(alumni.skills || []).join(', ') || 'N/A'}</p>
-          <p style="color:#666; font-size:12px;">Interests: ${(alumni.interests || []).join(', ') || 'N/A'}</p>
-          <button class="btn btn-primary" onclick="startChat('${doc.id}', '${alumni.name}')">Chat</button>
+          <h3>${post.title}</h3>
+          <p style="color:#666; font-size:12px;">By <strong>${author.name}</strong> | ${post.type.toUpperCase()} | ✓ Approved</p>
+          <p>${post.description}</p>
+          <button class="btn btn-primary" onclick="startChat('${post.authorId}', '${author.name}')">Chat with ${author.name}</button>
         `;
         container.appendChild(card);
       });
-    } else {
+
+         } else if (currentRole === 'alumni') {
+      // ALUMNI: See ALL published posts (all auto-approved now)
+      const snapshot = await db.collection('posts').orderBy('createdAt', 'desc').get();
+
+      container.innerHTML = '';
+      let hasAnyPosts = false;
+
+      snapshot.forEach(async doc => {
+        const post = doc.data();
+        hasAnyPosts = true;
+        
+        const authorDoc = await db.collection('users').doc(post.authorId).get();
+        const author = authorDoc.data();
+        
+        const card = document.createElement('div');
+        card.className = 'card';
+        
+        card.innerHTML = `
+          <h3>${post.title}</h3>
+          <p style="color:#666; font-size:12px;">
+            ${post.type.toUpperCase()} | By <strong>${author.name}</strong>
+          </p>
+          <p>${post.description}</p>
+          ${post.authorId === currentUser.uid ? `<button class="btn btn-danger" onclick="deletePost('${doc.id}')">Delete My Post</button>` : `<button class="btn btn-primary" onclick="startChat('${post.authorId}', '${author.name}')">Chat with ${author.name}</button>`}
+        `;
+        container.appendChild(card);
+      });
+
+      if (!hasAnyPosts) {
+        container.innerHTML = '<p style="text-align:center; color:#999;">No posts yet. Create one!</p>';
+      }
+
+
+    } else if (currentRole === 'admin') {
+      // ADMIN: See ALL posts (approved + pending)
       const snapshot = await db.collection('posts').orderBy('createdAt', 'desc').get();
 
       container.innerHTML = '';
@@ -254,25 +324,34 @@ async function loadFeed() {
         return;
       }
 
-      snapshot.forEach(doc => {
+      snapshot.forEach(async doc => {
         const post = doc.data();
-        if (currentRole === 'admin' || post.approved || post.authorId === currentUser.uid) {
-          const card = document.createElement('div');
-          card.className = 'card';
-          card.innerHTML = `
-            <h3>${post.title}</h3>
-            <p style="color:#666; font-size:12px;">${post.type.toUpperCase()} | ${post.approved ? '✓ Approved' : '⏳ Pending'}</p>
-            <p>${post.description}</p>
-            ${post.authorId === currentUser.uid ? `<button class="btn btn-danger" onclick="deletePost('${doc.id}')">Delete</button>` : ''}
-          `;
-          container.appendChild(card);
-        }
+        const authorDoc = await db.collection('users').doc(post.authorId).get();
+        const author = authorDoc.data();
+
+        const card = document.createElement('div');
+        card.className = 'card';
+        const statusBadge = post.approved ? '✓ Approved' : '⏳ Pending Review';
+        const statusColor = post.approved ? '#10b981' : '#f59e0b';
+
+        card.innerHTML = `
+          <h3>${post.title}</h3>
+          <p style="color:#666; font-size:12px;">
+            By <strong>${author.name}</strong> | ${post.type.toUpperCase()} | 
+            <span style="color:${statusColor}; font-weight:bold;">${statusBadge}</span>
+          </p>
+          <p>${post.description}</p>
+          ${!post.approved ? `<button class="btn btn-primary" onclick="approvePost('${doc.id}')">Approve</button>` : ''}
+          <button class="btn btn-danger" onclick="rejectPost('${doc.id}')">Reject</button>
+        `;
+        container.appendChild(card);
       });
     }
   } catch (error) {
     container.innerHTML = `<p style="color:red;">Error: ${error.message}</p>`;
   }
 }
+
 
 // ==========================================
 // POST FUNCTIONS
@@ -294,7 +373,7 @@ document.getElementById('btnCreatePost').addEventListener('click', async () => {
       description: desc, 
       type,
       authorId: currentUser.uid,
-      approved: false,
+      approved: true,
       createdAt: new Date()
     });
     showAlert('createPostAlert', 'Post submitted for review!', 'success');
@@ -493,7 +572,7 @@ document.getElementById('btnFindAlumni').addEventListener('click', async () => {
 
 async function loadAdmin() {
   const pendingAlumniDiv = document.getElementById('pendingAlumniList');
-  const pendingPostsDiv = document.getElementById('pendingPostsList');
+  const allPostsDiv = document.getElementById('pendingPostsList');
 
   try {
     const alumniSnapshot = await db.collection('users')
@@ -512,34 +591,39 @@ async function loadAdmin() {
         div.innerHTML = `
           <h4>${alumni.name}</h4>
           <p>${alumni.jobTitle} @ ${alumni.company}</p>
-          <button class="btn btn-primary" onclick="approveAlumni('${doc.id}')">Approve</button>
+          <button class="btn btn-primary" onclick="approveAlumni('${doc.id}')">Verify Alumni</button>
           <button class="btn btn-danger" onclick="rejectAlumni('${doc.id}')">Reject</button>
         `;
         pendingAlumniDiv.appendChild(div);
       });
     }
 
+    // NOW SHOWING ALL POSTS (for admin to reject irrelevant ones)
     const postsSnapshot = await db.collection('posts')
-      .where('approved', '==', false)
+      .orderBy('createdAt', 'desc')
       .get();
 
-    pendingPostsDiv.innerHTML = '';
+    allPostsDiv.innerHTML = '';
     if (postsSnapshot.empty) {
-      pendingPostsDiv.innerHTML = '<p style="color:#999;">No pending posts</p>';
+      allPostsDiv.innerHTML = '<p style="color:#999;">No posts</p>';
     } else {
-      postsSnapshot.forEach(doc => {
+      postsSnapshot.forEach(async doc => {
         const post = doc.data();
+        const authorDoc = await db.collection('users').doc(post.authorId).get();
+        const author = authorDoc.data();
+        
         const div = document.createElement('div');
         div.className = 'card';
         div.innerHTML = `
           <h4>${post.title}</h4>
+          <p style="color:#666; font-size:12px;">By <strong>${author.name}</strong> | ${post.type.toUpperCase()}</p>
           <p>${post.description}</p>
-          <button class="btn btn-primary" onclick="approvePost('${doc.id}')">Approve</button>
-          <button class="btn btn-danger" onclick="rejectPost('${doc.id}')">Reject</button>
+          <button class="btn btn-danger" onclick="rejectPost('${doc.id}')">❌ Delete (Irrelevant)</button>
         `;
-        pendingPostsDiv.appendChild(div);
+        allPostsDiv.appendChild(div);
       });
     }
+
   } catch (error) {
     console.error('Admin load error:', error);
   }
@@ -588,3 +672,20 @@ window.addEventListener('load', () => {
     loadChatAlumni();
   }
 });
+// ==========================================
+// EMAIL VALIDATION FUNCTION
+// ==========================================
+
+function isCollegeEmail(email) {
+  // List of accepted college email domains
+  const collegeEmailDomains = [
+    '@bvmengineering.ac.in',
+    '@bvm.ac.in',
+    '@bvmieu.ac.in',
+    '@bvmhs.ac.in'
+    // Add more college domains as needed
+  ];
+
+  // Check if email ends with any of the college domains
+  return collegeEmailDomains.some(domain => email.toLowerCase().endsWith(domain));
+}
