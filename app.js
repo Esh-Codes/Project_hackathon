@@ -1189,28 +1189,29 @@ async function joinSpecificQueue(alumniId, alumniName) {
 }
 
 async function cancelRequest() {
-  // Reset UI
-  document.getElementById('studentSearchArea').style.display = 'block';
-  document.getElementById('studentWaitingRoom').style.display = 'none';
-  document.getElementById('admissionTicket').innerHTML = '';
-  document.querySelector('#studentWaitingRoom .spinner').style.display = 'block';
-  document.getElementById('waitingText').style.display = 'block';
+  // 1. Reset UI: Switch back to the Search Area
+  const searchArea = document.getElementById('studentSearchArea');
+  const waitingRoom = document.getElementById('studentWaitingRoom');
   
-  // Stop listening to the request
-  if (myRequestUnsubscribe) myRequestUnsubscribe();
-}
+  if (searchArea) searchArea.style.display = 'block';
+  if (waitingRoom) waitingRoom.style.display = 'none';
 
-async function cancelRequest() {
-  // Reset UI
-  document.getElementById('studentSearchArea').style.display = 'block';
-  document.getElementById('studentWaitingRoom').style.display = 'none';
-  document.getElementById('btnFindAlumni').disabled = false;
-  document.getElementById('btnFindAlumni').textContent = "Find Live Alumni";
-  document.getElementById('admissionTicket').innerHTML = '';
-  document.querySelector('.spinner').style.display = 'block';
-  // Note: ideally we would delete the doc from Firestore here too, but for hackathon this is fine.
+  // 2. Clear the "Success Ticket" if it was there
+  const ticketDiv = document.getElementById('admissionTicket');
+  if (ticketDiv) ticketDiv.innerHTML = '';
+  
+  // 3. Reset the Waiting Text & Spinner
+  const spinner = document.querySelector('#studentWaitingRoom .spinner');
+  const waitingText = document.getElementById('waitingText');
+  if (spinner) spinner.style.display = 'block';
+  if (waitingText) waitingText.style.display = 'block';
+  
+  // 4. Stop listening to the database (Save data/battery)
+  if (myRequestUnsubscribe) {
+    myRequestUnsubscribe();
+    myRequestUnsubscribe = null;
+  }
 }
-
 // ==========================================
 // ADMIN FUNCTIONS
 // ==========================================
