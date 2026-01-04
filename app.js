@@ -78,6 +78,7 @@ async function registerUser() {
       verified: role === 'alumni' ? false : true,
       createdAt: new Date()
     };
+   
 
     if (role === 'alumni') {
       userData.gradYear = document.getElementById('regGradYear').value;
@@ -108,12 +109,10 @@ async function loginUser() {
     return;
   }
 
-  // VALIDATION: Students MUST use college email
-  if (role === 'student') {
-    if (!isCollegeEmail(email)) {
-      showAlert('loginAlert', '❌ Students must login with college email', 'error');
-      return;
-    }
+  // Student email validation
+  if (role === 'student' && !isCollegeEmail(email)) {
+    showAlert('loginAlert', '❌ Students must login with college email', 'error');
+    return;
   }
 
   try {
@@ -126,9 +125,19 @@ async function loginUser() {
       return;
     }
 
-    if (userDoc.data().role !== role) {
+    const userData = userDoc.data();
+
+    // 1. Check Role Match
+    if (userData.role !== role) {
       await auth.signOut();
       showAlert('loginAlert', 'Wrong role selected. Please check!', 'error');
+      return;
+    }
+
+    // 2. NEW: Check Alumni Verification Status
+    if (role === 'alumni' && userData.verified === false) {
+      await auth.signOut(); // Sign them back out immediately
+      showAlert('loginAlert', '⏳ Your account is pending admin verification. Please wait.', 'warning');
       return;
     }
     
