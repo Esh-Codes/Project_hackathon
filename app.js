@@ -451,6 +451,38 @@ document.getElementById('btnSaveProfile').addEventListener('click', async () => 
 // CHAT FUNCTIONS
 // ==========================================
 
+// ==========================================
+// CHAT FUNCTIONS
+// ==========================================
+
+
+let currentChatMode = 'private'; // 'private' or 'group'
+
+function switchChatMode(mode) {
+  currentChatMode = mode;
+  
+  // UI Toggles
+  document.getElementById('btnPrivateTab').classList.toggle('active', mode === 'private');
+  document.getElementById('btnGroupTab').classList.toggle('active', mode === 'group');
+  document.getElementById('privateChatControls').style.display = (mode === 'private') ? 'block' : 'none';
+  
+  // Reset and Load
+  const messagesEl = document.getElementById('chatMessages');
+  messagesEl.innerHTML = '';
+  
+  if (mode === 'group') {
+    currentChatWith = { id: 'global_group', name: 'Global Community' };
+    loadChatMessages();
+  } else {
+    currentChatWith = null;
+    const select = document.getElementById('chatSelect');
+    if (select.value) {
+      const alumniName = select.options[select.selectedIndex].text;
+      startChat(select.value, alumniName);
+    }
+  }
+}
+
 async function startChat(alumniId, alumniName) {
   currentChatWith = { id: alumniId, name: alumniName };
   showView('chatView');
@@ -460,32 +492,45 @@ async function startChat(alumniId, alumniName) {
 async function loadChatMessages() {
   if (!currentChatWith) return;
 
-  const chatId = [currentUser.uid, currentChatWith.id].sort().join('_');
-  const messagesEl = document.getElementById('chatMessages');
-  messagesEl.innerHTML = '';
+  // Pathing based on mode
+  const chatPath = (currentChatMode === 'private') 
+    ? `messages/private/${[currentUser.uid, currentChatWith.id].sort().join('_')}`
+    : `messages/public/global_group`;
 
-  rtdb.ref(`messages/${chatId}`).on('child_added', (snap) => {
+  const messagesEl = document.getElementById('chatMessages');
+  rtdb.ref(chatPath).off(); // Prevent duplicate listeners
+
+  rtdb.ref(chatPath).limitToLast(50).on('child_added', (snap) => {
     const msg = snap.val();
     const div = document.createElement('div');
     div.className = msg.senderId === currentUser.uid ? 'msg-sent' : 'msg-received';
-    div.innerHTML = `<p>${msg.text}</p><small>${new Date(msg.time).toLocaleTimeString()}</small>`;
+    
+    // Group mode adds a sender name label
+    const senderLabel = (currentChatMode === 'group' && msg.senderId !== currentUser.uid) 
+      ? `<span class="msg-sender-name">${msg.senderName}</span>` 
+      : '';
+
+    div.innerHTML = `
+      ${senderLabel}
+      <p>${msg.text}</p>
+      <span class="msg-time">${new Date(msg.time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+    `;
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   });
 }
 
 document.getElementById('btnSendMessage').addEventListener('click', async () => {
-  if (!currentChatWith) {
-    alert('Select an alumni first');
-    return;
-  }
-
   const text = document.getElementById('chatInput').value.trim();
-  if (!text) return;
+  if (!text || !currentChatWith) return;
 
-  const chatId = [currentUser.uid, currentChatWith.id].sort().join('_');
-  await rtdb.ref(`messages/${chatId}`).push({
+  const chatPath = (currentChatMode === 'private') 
+    ? `messages/private/${[currentUser.uid, currentChatWith.id].sort().join('_')}`
+    : `messages/public/global_group`;
+
+  await rtdb.ref(chatPath).push({
     senderId: currentUser.uid,
+    senderName: currentUser.name,
     text,
     time: Date.now()
   });
@@ -496,6 +541,8 @@ document.getElementById('btnSendMessage').addEventListener('click', async () => 
 // Load alumni list for chat
 async function loadChatAlumni() {
   const select = document.getElementById('chatSelect');
+  select.innerHTML = '<option value="">Select Alumni...</option>';
+  
   const snapshot = await db.collection('users')
     .where('role', '==', 'alumni')
     .where('verified', '==', true)

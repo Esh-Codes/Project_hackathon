@@ -1418,3 +1418,106 @@ textarea.form-input {
 .mb-20 {
   margin-bottom: var(--space-20);
 }
+/* ==================== CHAT SYSTEM ENHANCEMENTS ==================== */
+
+/* Chat Layout & Container */
+.chat-box {
+  display: flex;
+  flex-direction: column;
+  height: 450px;
+  overflow-y: auto;
+  padding: var(--space-16);
+  background-color: var(--color-background); /* */
+  border: 1px solid var(--color-border); /* */
+  border-radius: var(--radius-base); /* */
+  gap: var(--space-8); /* */
+}
+
+/* Chat Mode Toggles (Private vs Group) */
+.chat-tabs {
+  display: flex;
+  gap: var(--space-8);
+  margin-bottom: var(--space-16);
+  padding: var(--space-4);
+  background: var(--color-secondary); /* */
+  border-radius: var(--radius-md); /* */
+}
+
+.chat-tab {
+  flex: 1;
+  padding: var(--space-8) var(--space-12);
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-base);
+  cursor: pointer;
+  font-weight: var(--font-weight-medium);
+  transition: all var(--duration-fast) var(--ease-standard);
+  color: var(--color-text-secondary);
+}
+
+.chat-tab.active {
+  background: var(--color-surface); /* */
+  color: var(--color-primary); /* */
+  box-shadow: var(--shadow-sm); /* */
+}
+
+/* Message Bubbles */
+.msg-sent, 
+.msg-received {
+  position: relative;
+  max-width: 80%;
+  padding: var(--space-10) var(--space-16);
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-normal);
+  word-wrap: break-word;
+}
+
+.msg-sent {
+  background: var(--color-primary); /* */
+  color: var(--color-btn-primary-text); /* */
+  align-self: flex-end;
+  border-bottom-right-radius: var(--space-2);
+  text-align: left;
+}
+
+.msg-received {
+  background: var(--color-surface); /* */
+  color: var(--color-text); /* */
+  border: 1px solid var(--color-card-border-inner);
+  align-self: flex-start;
+  border-bottom-left-radius: var(--space-2);
+}
+
+/* Group Chat Specifics */
+.msg-sender-name {
+  display: block;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  margin-bottom: var(--space-4);
+  color: var(--color-teal-500); /* Highlighted name for group chat */
+}
+
+/* Timestamps */
+.msg-time {
+  display: block;
+  font-size: 10px;
+  opacity: 0.7;
+  margin-top: var(--space-4);
+  text-align: right;
+}
+
+/* Mobile Responsive Adjustments */
+@media (max-width: 480px) {
+  .chat-box {
+    height: 300px;
+    padding: var(--space-12);
+  }
+  
+  .msg-sent, 
+  .msg-received {
+    max-width: 90%;
+    font-size: var(--font-size-sm);
+  }
+}

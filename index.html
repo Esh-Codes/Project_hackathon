@@ -163,19 +163,30 @@
           </div>
 
           <!-- Chat View -->
-          <div id="chatView" class="view-page" style="display:none;">
-            <h2>💬 Chat</h2>
-            <div class="card">
-              <select id="chatSelect" class="form-input">
-                <option>Select Alumni...</option>
-              </select>
-              <div id="chatMessages" class="chat-box"></div>
-              <div style="display:flex; gap:10px;">
-                <input id="chatInput" class="form-input" placeholder="Type message..." style="flex:1;">
-                <button id="btnSendMessage" class="btn btn-primary">Send</button>
-              </div>
-            </div>
-          </div>
+<div id="chatView" class="view-page" style="display:none;">
+  <h2>💬 Communications</h2>
+
+  <div class="chat-tabs">
+    <button id="btnPrivateTab" class="chat-tab active" onclick="switchChatMode('private')">Private Chat</button>
+    <button id="btnGroupTab" class="chat-tab" onclick="switchChatMode('group')">Global Group</button>
+  </div>
+
+  <div class="card">
+    <div id="privateChatControls">
+      <label class="form-label">Select Recipient</label>
+      <select id="chatSelect" class="form-control" style="margin-bottom: var(--space-16);">
+        <option value="">Select Alumni...</option>
+      </select>
+    </div>
+
+    <div id="chatMessages" class="chat-box"></div>
+
+    <div style="display:flex; gap:10px; margin-top: var(--space-16);">
+      <input id="chatInput" class="form-control" placeholder="Type your message..." style="flex:1;">
+      <button id="btnSendMessage" class="btn btn-primary">Send</button>
+    </div>
+  </div>
+</div>
 
           <!-- Admin Verification View -->
           <div id="adminView" class="view-page" style="display:none;">
