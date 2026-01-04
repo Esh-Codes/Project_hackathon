@@ -47,8 +47,9 @@ async function registerUser() {
   const name = document.getElementById('regName').value.trim();
   const email = document.getElementById('regEmail').value.trim();
   const password = document.getElementById('regPassword').value.trim();
-  const role = document.getElementById('regRole').value.trim();  // ← Add .trim()
+  const role = document.getElementById('regRole').value;
 
+  // VALIDATION: Check all fields
   if (!name || !email || !password) {
     showAlert('registerAlert', 'Fill all fields', 'error');
     return;
@@ -73,21 +74,19 @@ async function registerUser() {
     const uid = cred.user.uid;
 
     let userData = {
-      email, 
-      role: role.trim(),  // ← Trim role here too
-      name,
+      email, role, name,
       verified: role === 'alumni' ? false : true,
       createdAt: new Date()
     };
 
     if (role === 'alumni') {
-      userData.gradYear = document.getElementById('regGradYear').value.trim();
-      userData.jobTitle = document.getElementById('regJobTitle').value.trim();
-      userData.company = document.getElementById('regCompany').value.trim();
+      userData.gradYear = document.getElementById('regGradYear').value;
+      userData.jobTitle = document.getElementById('regJobTitle').value;
+      userData.company = document.getElementById('regCompany').value;
       userData.skills = document.getElementById('regSkills').value.split(',').map(s => s.trim()).filter(Boolean);
       userData.interests = document.getElementById('regInterests').value.split(',').map(i => i.trim()).filter(Boolean);
     } else if (role === 'student') {
-      userData.collegeId = document.getElementById('regCollegeId').value.trim();
+      userData.collegeId = document.getElementById('regCollegeId').value;
     }
 
     await db.collection('users').doc(uid).set(userData);
@@ -99,11 +98,10 @@ async function registerUser() {
 }
 
 
-
 async function loginUser() {
   const email = document.getElementById('loginEmail').value.trim();
   const password = document.getElementById('loginPassword').value.trim();
-  const selectedRole = document.getElementById('loginRole').value.trim();  // ← Add .trim()
+  const role = document.getElementById('loginRole').value;
 
   if (!email || !password) {
     showAlert('loginAlert', 'Fill all fields', 'error');
@@ -111,7 +109,7 @@ async function loginUser() {
   }
 
   // VALIDATION: Students MUST use college email
-  if (selectedRole === 'student') {
+  if (role === 'student') {
     if (!isCollegeEmail(email)) {
       showAlert('loginAlert', '❌ Students must login with college email', 'error');
       return;
@@ -124,30 +122,21 @@ async function loginUser() {
     
     if (!userDoc.exists) {
       await auth.signOut();
-      showAlert('loginAlert', '❌ User account not found', 'error');
+      showAlert('loginAlert', 'User account not found', 'error');
       return;
     }
 
-    const userData = userDoc.data();
-    const userRole = userData.role.trim();  // ← Trim stored role too
-
-    console.log('Login - Selected role:', selectedRole, 'User role:', userRole);
-
-    // Check if role matches
-    if (userRole !== selectedRole) {
+    if (userDoc.data().role !== role) {
       await auth.signOut();
-      showAlert('loginAlert', `❌ Your account is registered as "${userRole}" but you selected "${selectedRole}". Please select the correct role!`, 'error');
+      showAlert('loginAlert', 'Wrong role selected. Please check!', 'error');
       return;
     }
     
-    // Success - user logged in
-    showAlert('loginAlert', '✅ Login successful!', 'success');
+    showAlert('loginAlert', '', 'success');
   } catch (error) {
-    showAlert('loginAlert', '❌ ' + error.message, 'error');
+    showAlert('loginAlert', error.message, 'error');
   }
 }
-
-
 
 
 async function logoutUser() {
@@ -159,10 +148,12 @@ async function logoutUser() {
 }
 
 // Auth State Listener
+// Around Line 140 in app.js
 auth.onAuthStateChanged(async (user) => {
   document.getElementById('loadingScreen').style.display = 'none';
 
   if (!user) {
+    // If no user is logged in, show auth screen and STOP.
     document.getElementById('authSection').classList.remove('hidden');
     document.getElementById('mainContent').classList.add('hidden');
     return;
@@ -181,20 +172,22 @@ auth.onAuthStateChanged(async (user) => {
     document.getElementById('authSection').classList.add('hidden');
     document.getElementById('mainContent').classList.remove('hidden');
 
+    // ONLY call these once we are sure the user is logged in
     updateUI();
     loadFeed();
     
-    // Load chat alumni for students AFTER auth is complete
+    // Specifically for the Chat dropdown error on line 635
     if (currentRole === 'student') {
-      setTimeout(() => loadChatAlumni(), 500);
+      loadChatAlumni();
     }
     
+    // Setup presence for Office Hours
     setupPresence();
+    
   } catch (error) {
-    console.error('Auth error:', error);
+    console.error('Permission error during initial load:', error);
   }
 });
-
 
 // ==========================================
 // UI FUNCTIONS
@@ -450,190 +443,69 @@ document.getElementById('btnSaveProfile').addEventListener('click', async () => 
 // ==========================================
 
 async function startChat(alumniId, alumniName) {
-  if (!alumniId || !alumniName) {
-    alert('❌ Please select an alumni first');
-    return;
-  }
-
   currentChatWith = { id: alumniId, name: alumniName };
-  
-  // Update UI to show who we're chatting with
-  document.querySelector('.chat-box')?.parentElement.classList.add('active');
-  const chatHeader = document.querySelector('#chatView h2');
-  if (chatHeader) {
-    chatHeader.textContent = `💬 Chat with ${alumniName}`;
-  }
-  
   showView('chatView');
   loadChatMessages();
 }
-
 
 async function loadChatMessages() {
   if (!currentChatWith) return;
 
   const chatId = [currentUser.uid, currentChatWith.id].sort().join('_');
   const messagesEl = document.getElementById('chatMessages');
-  messagesEl.innerHTML = `<p style="text-align:center; color:#999;">Loading messages...</p>`;
+  messagesEl.innerHTML = '';
 
-  try {
-    // Clear previous listeners
-    rtdb.ref(`messages/${chatId}`).off();
-
-    // Load existing messages
-    rtdb.ref(`messages/${chatId}`).once('value', (snap) => {
-      messagesEl.innerHTML = '';
-      const data = snap.val();
-      
-      if (!data) {
-        messagesEl.innerHTML = `<p style="text-align:center; color:#999;">No messages yet. Start the conversation!</p>`;
-      } else {
-        // Convert to array and sort by timestamp
-        const messages = Object.values(data).sort((a, b) => a.time - b.time);
-        messages.forEach(msg => {
-          const div = document.createElement('div');
-          div.className = msg.senderId === currentUser.uid ? 'msg-sent' : 'msg-received';
-          div.style.marginBottom = '10px';
-          div.style.padding = '8px 12px';
-          div.style.borderRadius = '8px';
-          div.style.maxWidth = '70%';
-          
-          if (msg.senderId === currentUser.uid) {
-            div.style.backgroundColor = '#2563eb';
-            div.style.color = 'white';
-            div.style.marginLeft = 'auto';
-            div.style.marginRight = '0';
-          } else {
-            div.style.backgroundColor = '#e5e7eb';
-            div.style.color = '#1f2937';
-            div.style.marginRight = 'auto';
-            div.style.marginLeft = '0';
-          }
-          
-          div.innerHTML = `<p style="margin:0; word-wrap:break-word;">${msg.text}</p><small style="opacity:0.8;">${new Date(msg.time).toLocaleTimeString()}</small>`;
-          messagesEl.appendChild(div);
-        });
-      }
-      
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    });
-
-    // Listen for new messages
-    rtdb.ref(`messages/${chatId}`).on('child_added', (snap) => {
-      const msg = snap.val();
-      const div = document.createElement('div');
-      div.className = msg.senderId === currentUser.uid ? 'msg-sent' : 'msg-received';
-      div.style.marginBottom = '10px';
-      div.style.padding = '8px 12px';
-      div.style.borderRadius = '8px';
-      div.style.maxWidth = '70%';
-      
-      if (msg.senderId === currentUser.uid) {
-        div.style.backgroundColor = '#2563eb';
-        div.style.color = 'white';
-        div.style.marginLeft = 'auto';
-        div.style.marginRight = '0';
-      } else {
-        div.style.backgroundColor = '#e5e7eb';
-        div.style.color = '#1f2937';
-        div.style.marginRight = 'auto';
-        div.style.marginLeft = '0';
-      }
-      
-      div.innerHTML = `<p style="margin:0; word-wrap:break-word;">${msg.text}</p><small style="opacity:0.8;">${new Date(msg.time).toLocaleTimeString()}</small>`;
-      messagesEl.appendChild(div);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
-    });
-
-  } catch (error) {
-    console.error('Error loading messages:', error);
-    messagesEl.innerHTML = `<p style="color:red;">Error: ${error.message}</p>`;
-  }
+  rtdb.ref(`messages/${chatId}`).on('child_added', (snap) => {
+    const msg = snap.val();
+    const div = document.createElement('div');
+    div.className = msg.senderId === currentUser.uid ? 'msg-sent' : 'msg-received';
+    div.innerHTML = `<p>${msg.text}</p><small>${new Date(msg.time).toLocaleTimeString()}</small>`;
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  });
 }
-
 
 document.getElementById('btnSendMessage').addEventListener('click', async () => {
   if (!currentChatWith) {
-    alert('❌ Please select an alumni first');
+    alert('Select an alumni first');
     return;
   }
 
   const text = document.getElementById('chatInput').value.trim();
-  if (!text) {
-    alert('❌ Please type a message');
-    return;
-  }
+  if (!text) return;
 
-  try {
-    const chatId = [currentUser.uid, currentChatWith.id].sort().join('_');
-    await rtdb.ref(`messages/${chatId}`).push({
-      senderId: currentUser.uid,
-      senderName: currentUser.name,
-      text,
-      time: Date.now()
-    });
+  const chatId = [currentUser.uid, currentChatWith.id].sort().join('_');
+  await rtdb.ref(`messages/${chatId}`).push({
+    senderId: currentUser.uid,
+    text,
+    time: Date.now()
+  });
 
-    document.getElementById('chatInput').value = '';
-  } catch (error) {
-    console.error('Error sending message:', error);
-    alert('❌ Error: ' + error.message);
-  }
+  document.getElementById('chatInput').value = '';
 });
 
-
-// Load alumni list for chat
-// Load alumni list for chat
 // Load alumni list for chat
 async function loadChatAlumni() {
   const select = document.getElementById('chatSelect');
-  
-  try {
-    console.log('Loading alumni for chat...');
-    
-    // Clear previous options
-    select.innerHTML = '<option value="">-- Select Alumni --</option>';
+  const snapshot = await db.collection('users')
+    .where('role', '==', 'alumni')
+    .where('verified', '==', true)
+    .get();
 
-    const snapshot = await db.collection('users')
-      .where('role', '==', 'alumni')
-      .where('verified', '==', true)
-      .get();
+  snapshot.forEach(doc => {
+    const opt = document.createElement('option');
+    opt.value = doc.id;
+    opt.textContent = doc.data().name;
+    select.appendChild(opt);
+  });
 
-    console.log('Found ' + snapshot.size + ' verified alumni');
-
-    if (snapshot.empty) {
-      const opt = document.createElement('option');
-      opt.textContent = '❌ No verified alumni available';
-      opt.disabled = true;
-      select.appendChild(opt);
-      return;
+  select.addEventListener('change', () => {
+    if (select.value) {
+      const alumni = snapshot.docs.find(d => d.id === select.value).data();
+      startChat(select.value, alumni.name);
     }
-
-    snapshot.forEach(doc => {
-      const alumni = doc.data();
-      const opt = document.createElement('option');
-      opt.value = doc.id;
-      opt.textContent = `${alumni.name} - ${alumni.jobTitle || 'N/A'} @ ${alumni.company || 'N/A'}`;
-      select.appendChild(opt);
-      console.log('Added: ' + alumni.name);
-    });
-
-    // Add change event listener
-    select.addEventListener('change', function() {
-      if (this.value) {
-        const alumniId = this.value;
-        const alumniName = this.options[this.selectedIndex].text.split(' - ')[0];
-        console.log('Selected alumni: ' + alumniName);
-        startChat(alumniId, alumniName);
-      }
-    });
-
-  } catch (error) {
-    console.error('Error loading alumni:', error);
-    select.innerHTML = '<option disabled>❌ Error: ' + error.message + '</option>';
-  }
+  });
 }
-
-
 
 // ==========================================
 // OFFICE HOURS ROULETTE
@@ -711,106 +583,85 @@ document.getElementById('btnFindAlumni').addEventListener('click', async () => {
 // ==========================================
 
 async function loadAdmin() {
-   console.log('=== ADMIN PANEL LOADING ===');
-  console.log('Current user:', currentUser);
-  console.log('Current role:', currentRole);
-  
   const pendingAlumniDiv = document.getElementById('pendingAlumniList');
   const allPostsDiv = document.getElementById('pendingPostsList');
 
-  console.log('pendingAlumniDiv:', pendingAlumniDiv);
-  console.log('allPostsDiv:', allPostsDiv);
-
   try {
-    // ===== LOAD PENDING ALUMNI =====
-    console.log('Loading pending alumni...');
     const alumniSnapshot = await db.collection('users')
       .where('role', '==', 'alumni')
       .where('verified', '==', false)
       .get();
 
     pendingAlumniDiv.innerHTML = '';
-    
     if (alumniSnapshot.empty) {
-      pendingAlumniDiv.innerHTML = '<p style="color:#999; text-align:center;">✅ No pending alumni</p>';
+      pendingAlumniDiv.innerHTML = '<p style="color:#999;">No pending alumni</p>';
     } else {
-      console.log('Found ' + alumniSnapshot.size + ' pending alumni');
       alumniSnapshot.forEach(doc => {
         const alumni = doc.data();
         const div = document.createElement('div');
         div.className = 'card';
         div.innerHTML = `
           <h4>${alumni.name}</h4>
-          <p><strong>${alumni.jobTitle || 'N/A'}</strong> @ ${alumni.company || 'N/A'}</p>
-          <p style="color:#666; font-size:12px;">Email: ${alumni.email}</p>
-          <div style="display:flex; gap:10px; margin-top:10px;">
-            <button class="btn btn-primary" onclick="approveAlumni('${doc.id}')">✅ Verify</button>
-            <button class="btn btn-danger" onclick="rejectAlumni('${doc.id}')">❌ Reject</button>
-          </div>
+          <p>${alumni.jobTitle} @ ${alumni.company}</p>
+          <button class="btn btn-primary" onclick="approveAlumni('${doc.id}')">Verify Alumni</button>
+          <button class="btn btn-danger" onclick="rejectAlumni('${doc.id}')">Reject</button>
         `;
         pendingAlumniDiv.appendChild(div);
       });
     }
 
-    // ===== LOAD ALL POSTS =====
-    console.log('Loading all posts...');
+    // NOW SHOWING ALL POSTS (for admin to reject irrelevant ones)
     const postsSnapshot = await db.collection('posts')
       .orderBy('createdAt', 'desc')
       .get();
 
     allPostsDiv.innerHTML = '';
-    
     if (postsSnapshot.empty) {
-      allPostsDiv.innerHTML = '<p style="color:#999; text-align:center;">✅ No posts</p>';
+      allPostsDiv.innerHTML = '<p style="color:#999;">No posts</p>';
     } else {
-      console.log('Found ' + postsSnapshot.size + ' posts');
-      
       postsSnapshot.forEach(async doc => {
         const post = doc.data();
-        
-        // Get author details
-        let authorName = 'Unknown Author';
-        try {
-          const authorDoc = await db.collection('users').doc(post.authorId).get();
-          if (authorDoc.exists) {
-            authorName = authorDoc.data().name;
-          }
-        } catch (error) {
-          console.error('Error loading author:', error);
-        }
+        const authorDoc = await db.collection('users').doc(post.authorId).get();
+        const author = authorDoc.data();
         
         const div = document.createElement('div');
         div.className = 'card';
-        div.style.marginBottom = '15px';
-        
-        const statusBadge = post.approved ? '✅ Approved' : '⏳ Pending Review';
-        const statusColor = post.approved ? '#10b981' : '#f59e0b';
-        const statusBgColor = post.approved ? 'rgba(16, 185, 129, 0.1)' : 'rgba(245, 158, 11, 0.1)';
-        
         div.innerHTML = `
-          <h4 style="margin-top:0;">${post.title}</h4>
-          <p style="color:#666; font-size:12px; margin:5px 0;">
-            By <strong>${authorName}</strong> | ${post.type.toUpperCase()}
-          </p>
-          <p style="color:#666; font-size:12px; margin:5px 0; padding:8px; background:${statusBgColor}; border-radius:6px; border-left:3px solid ${statusColor};">
-            <strong style="color:${statusColor};">${statusBadge}</strong>
-          </p>
-          <p style="margin:10px 0; line-height:1.5;">${post.description}</p>
-          <div style="display:flex; gap:10px; margin-top:10px;">
-            ${!post.approved ? `<button class="btn btn-primary" onclick="approvePost('${doc.id}')">✅ Approve</button>` : ''}
-            <button class="btn btn-danger" onclick="rejectPost('${doc.id}')">❌ Delete</button>
-          </div>
+          <h4>${post.title}</h4>
+          <p style="color:#666; font-size:12px;">By <strong>${author.name}</strong> | ${post.type.toUpperCase()}</p>
+          <p>${post.description}</p>
+          <button class="btn btn-danger" onclick="rejectPost('${doc.id}')">❌ Delete (Irrelevant)</button>
         `;
         allPostsDiv.appendChild(div);
       });
     }
+
   } catch (error) {
     console.error('Admin load error:', error);
-    pendingAlumniDiv.innerHTML = `<p style="color:red;">❌ Error: ${error.message}</p>`;
-    allPostsDiv.innerHTML = `<p style="color:red;">❌ Error: ${error.message}</p>`;
   }
 }
 
+async function approveAlumni(uid) {
+  await db.collection('users').doc(uid).update({ verified: true });
+  loadAdmin();
+}
+
+async function rejectAlumni(uid) {
+  await db.collection('users').doc(uid).delete();
+  loadAdmin();
+}
+
+async function approvePost(postId) {
+  await db.collection('posts').doc(postId).update({ approved: true });
+  loadAdmin();
+  loadFeed();
+}
+
+async function rejectPost(postId) {
+  await db.collection('posts').doc(postId).delete();
+  loadAdmin();
+  loadFeed();
+}
 
 // ==========================================
 // UTILITY FUNCTIONS
@@ -827,7 +678,12 @@ document.getElementById('btnLogout').addEventListener('click', logoutUser);
 document.getElementById('btnLogoutSidebar').addEventListener('click', logoutUser);
 
 // Initialize on load
-
+window.addEventListener('load', () => {
+  setupPresence();
+  if (currentRole === 'student') {
+    loadChatAlumni();
+  }
+});
 // ==========================================
 // EMAIL VALIDATION FUNCTION
 // ==========================================
@@ -835,53 +691,13 @@ document.getElementById('btnLogoutSidebar').addEventListener('click', logoutUser
 function isCollegeEmail(email) {
   // List of accepted college email domains
   const collegeEmailDomains = [
-    '@bvmengineering.ac.in'
+    '@bvmengineering.ac.in',
+    '@bvm.ac.in',
+    '@bvmieu.ac.in',
+    '@bvmhs.ac.in'
     // Add more college domains as needed
   ];
 
   // Check if email ends with any of the college domains
   return collegeEmailDomains.some(domain => email.toLowerCase().endsWith(domain));
-}
-async function approveAlumni(uid) {
-  try {
-    await db.collection('users').doc(uid).update({ verified: true });
-    alert('✅ Alumni verified!');
-    loadAdmin();
-  } catch (error) {
-    alert('❌ Error: ' + error.message);
-  }
-}
-
-async function rejectAlumni(uid) {
-  if (confirm('Are you sure? This will delete the user account.')) {
-    try {
-      await db.collection('users').doc(uid).delete();
-      alert('✅ Alumni rejected and deleted!');
-      loadAdmin();
-    } catch (error) {
-      alert('❌ Error: ' + error.message);
-    }
-  }
-}
-
-async function approvePost(postId) {
-  try {
-    await db.collection('posts').doc(postId).update({ approved: true });
-    alert('✅ Post approved!');
-    loadAdmin();
-  } catch (error) {
-    alert('❌ Error: ' + error.message);
-  }
-}
-
-async function rejectPost(postId) {
-  if (confirm('Are you sure? This will delete the post.')) {
-    try {
-      await db.collection('posts').doc(postId).delete();
-      alert('✅ Post deleted!');
-      loadAdmin();
-    } catch (error) {
-      alert('❌ Error: ' + error.message);
-    }
-  }
 }
