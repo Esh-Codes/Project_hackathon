@@ -138,8 +138,11 @@
           </div>
 
           <!-- Office Hours Roulette View -->
-          <div id="rouletteView" class="view-page" style="display:none;">
+<div id="rouletteView" class="view-page" style="display:none;">
   <h2>🎯 Office Hours Roulette</h2>
+  <p style="margin-bottom:20px; color:#666;">
+    Connect instantly with alumni for 1:1 mentorship.
+  </p>
   
   <div id="alumniRoulette" style="display:none;">
     <div class="card">
@@ -154,13 +157,19 @@
       </div>
       
       <div class="form-group">
-        <label>
-          <input type="checkbox" id="alumniLiveToggle"> 
+        <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+          <input type="checkbox" id="alumniLiveToggle" style="width:20px; height:20px;"> 
           <strong>I am Online & Ready</strong>
         </label>
       </div>
 
-      <button id="btnUpdateLive" class="btn btn-primary full-width">Update Status</button>
+      <button id="btnUpdateLive" class="btn btn-primary full-width">
+        Update Status
+      </button>
+
+      <button id="btnStopLive" class="btn btn-danger full-width" style="display:none; margin-top:10px;">
+        🔴 END LIVE SESSION
+      </button>
     </div>
 
     <div class="card" style="margin-top:20px;">
@@ -172,20 +181,40 @@
   </div>
 
   <div id="studentRoulette" style="display:none;">
-    <div id="studentSearchArea" class="card">
-      <h3>👋 Find a Mentor</h3>
-      <p>Connect with alumni available right now.</p>
-      <input id="studentQuestion" class="form-input" placeholder="What do you want to ask? (e.g. Resume tips)">
-      <button id="btnFindAlumni" class="btn btn-primary full-width">Find Live Alumni</button>
+    
+    <div id="studentSearchArea">
+      
+      <div class="card" style="border-left: 4px solid var(--color-primary); margin-bottom:20px;">
+        <h3>📝 Step 1: Topic</h3>
+        <p style="color:#666; font-size:12px; margin-bottom:10px;">
+          What do you want to ask? (e.g. "Resume tips", "Career advice")
+        </p>
+        <input id="studentQuestion" class="form-input" placeholder="Type your topic here..." style="font-size:16px;">
+      </div>
+
+      <h3>📡 Step 2: Pick an Online Mentor</h3>
+      
+      <div id="liveAlumniContainer" style="min-height: 100px;">
+        <p style="text-align:center; padding:20px; color:#999;">
+          <span class="spinner" style="width:20px; height:20px; display:inline-block; border-width:2px;"></span>
+          Scanning for online alumni...
+        </p>
+      </div>
+
     </div>
 
     <div id="studentWaitingRoom" class="card" style="display:none; text-align:center;">
       <div class="spinner" style="margin: 0 auto 20px auto;"></div>
-      <h3>Waiting for Alumni...</h3>
-      <p id="waitingText" style="color:#666;">You are in the queue. Please stay on this page.</p>
-      <div id="admissionTicket" style="margin-top:20px;"></div>
-      <button onclick="cancelRequest()" class="btn btn-danger btn-sm" style="margin-top:20px;">Cancel/Leave</button>
+      <h3>You are in the queue!</h3>
+      <p id="waitingText" style="color:#666; margin-bottom:20px;">Please wait...</p>
+      
+      <div id="admissionTicket"></div>
+      
+      <button onclick="cancelRequest()" class="btn btn-danger btn-sm" style="margin-top:20px;">
+        Leave Queue
+      </button>
     </div>
+
   </div>
 </div>
 

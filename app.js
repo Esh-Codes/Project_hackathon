@@ -301,6 +301,7 @@ function showView(viewId) {
 
   if (viewId === 'feedView') loadFeed();
   if (viewId === 'profileView') loadProfile();
+  if (viewId === 'rouletteView') initRouletteView();
   if (viewId === 'adminView') loadAdmin();
   
   // Show/hide roulette sections based on role
@@ -860,15 +861,62 @@ async function loadChatAlumni() {
 // OFFICE HOURS ROULETTE (NO-API VERSION)
 // ==========================================
 
-let queueListener = null; // To store the real-time listener
+// ==========================================
+// OFFICE HOURS ROULETTE (REAL-TIME LIST VERSION)
+// ==========================================
 
-// --- ALUMNI FUNCTIONS ---
+let alumniQueueUnsubscribe = null; // Listener for Alumni to see Students
+let liveAlumniUnsubscribe = null;  // Listener for Students to see Alumni
+let myRequestUnsubscribe = null;   // Listener for Student to know if admitted
 
+// ------------------------------------------
+// 1. SHARED: Initialization (Call this when opening the view)
+// ------------------------------------------
+function initRouletteView()  {
+  if (currentRole === 'alumni') {
+    // Check if I am already live
+    if (currentUser.isLive) {
+      document.getElementById('alumniLiveToggle').checked = true;
+      document.getElementById('alumniMeetLink').value = currentUser.meetLink || '';
+      
+      // SHOW RED BUTTON, HIDE BLUE BUTTON
+      document.getElementById('btnStopLive').style.display = 'block';
+      document.getElementById('btnUpdateLive').style.display = 'none';
+      
+      listenToMyQueue();
+    } else {
+      // Ensure defaults
+      document.getElementById('btnStopLive').style.display = 'none';
+      document.getElementById('btnUpdateLive').style.display = 'block';
+    }
+  } 
+  // ... rest of student logic ...
+
+   else if (currentRole === 'student') {
+    // Start listening for ANY alumni going live
+    listenForLiveAlumni();
+  }
+}
+
+// Hook this into your showView function
+// Find the existing showView() in app.js and add:
+// if (viewId === 'rouletteView') initRouletteView();
+
+
+// ------------------------------------------
+// 2. ALUMNI FUNCTIONS
+// ------------------------------------------
+
+// ------------------------------------------
+// 2. ALUMNI FUNCTIONS
+// ------------------------------------------
+
+// BLUE BUTTON: GO LIVE
 document.getElementById('btnUpdateLive').addEventListener('click', async () => {
   const isLive = document.getElementById('alumniLiveToggle').checked;
   const meetLink = document.getElementById('alumniMeetLink').value.trim();
 
-  // Validation: Must have a link to go live
+  // 1. Validation: Must have a link to go live
   if (isLive && !meetLink) {
     alert("❌ Please paste your Google Meet link first!");
     document.getElementById('alumniLiveToggle').checked = false;
@@ -876,34 +924,84 @@ document.getElementById('btnUpdateLive').addEventListener('click', async () => {
   }
 
   try {
-    // 1. Update User Status
+    // 2. Update Cloud Status
     await db.collection('users').doc(currentUser.uid).update({
       isLive: isLive,
-      meetLink: meetLink || "" // Save the link so we can give it to students later
+      meetLink: meetLink || ""
     });
+
+    // 3. Update Local State
+    currentUser.isLive = isLive;
+    currentUser.meetLink = meetLink;
 
     if (isLive) {
       alert('✅ You are now LIVE! Students can see you.');
-      listenToMyQueue(); // Start watching for students
+      
+      // UI: Switch to "Live Mode" (Hide Blue, Show Red)
+      document.getElementById('btnUpdateLive').style.display = 'none';
+      document.getElementById('btnStopLive').style.display = 'block';
+      
+      listenToMyQueue();
     } else {
+      // If they unchecked the box and clicked Update (Legacy way)
       alert('You are offline.');
-      if (queueListener) queueListener(); // Stop listening
-      document.getElementById('alumniQueueContainer').innerHTML = '<p style="color:#999; text-align:center;">You are offline.</p>';
+      handleOfflineUI();
     }
-
   } catch (error) {
     console.error(error);
-    alert('Error updating status: ' + error.message);
+    alert('Error: ' + error.message);
   }
 });
 
-// Real-time listener for the Alumni to see waiting students
+// RED BUTTON: STOP LIVE SESSION
+document.getElementById('btnStopLive').addEventListener('click', async () => {
+  if (!confirm("🔴 End Session?\n\nThis will remove you from the student list and stop new requests.")) {
+    return;
+  }
+
+  try {
+    // 1. Force status to offline in Database
+    await db.collection('users').doc(currentUser.uid).update({
+      isLive: false
+    });
+
+    // 2. Update Local State & UI
+    currentUser.isLive = false;
+    document.getElementById('alumniLiveToggle').checked = false;
+    
+    handleOfflineUI();
+
+    alert("🔴 Session Ended. You are now offline.");
+
+  } catch (error) {
+    console.error(error);
+    alert("Error stopping session: " + error.message);
+  }
+});
+
+// Helper to reset UI when going offline
+function handleOfflineUI() {
+  // Toggle Buttons
+  document.getElementById('btnStopLive').style.display = 'none';
+  document.getElementById('btnUpdateLive').style.display = 'block';
+  
+  // Clear Queue Display
+  document.getElementById('alumniQueueContainer').innerHTML = '<p style="color:#999; text-align:center;">You are offline.</p>';
+
+  // Stop Listening
+  if (alumniQueueUnsubscribe) alumniQueueUnsubscribe();
+}
+
+// Queue Listener (Shows students waiting)
 function listenToMyQueue() {
   const container = document.getElementById('alumniQueueContainer');
   
-  // Listen to the sub-collection 'queue' under this alumni
-  queueListener = db.collection('users').doc(currentUser.uid).collection('queue')
-    .where('status', '==', 'waiting') // Only show waiting students
+  // Stop previous listener if exists
+  if (alumniQueueUnsubscribe) alumniQueueUnsubscribe();
+
+  // Listen to MY sub-collection 'queue'
+  alumniQueueUnsubscribe = db.collection('users').doc(currentUser.uid).collection('queue')
+    .where('status', '==', 'waiting')
     .orderBy('timestamp', 'asc')
     .onSnapshot(snapshot => {
       container.innerHTML = '';
@@ -917,15 +1015,21 @@ function listenToMyQueue() {
         const req = doc.data();
         const card = document.createElement('div');
         card.className = 'card';
-        card.style.background = '#f8f9fa';
+        card.style.background = '#fff';
+        card.style.borderLeft = '4px solid #f59e0b'; // Orange strip
         card.style.marginBottom = '10px';
+        
+        // Clean timestamp
+        const timeAgo = req.timestamp ? new Date(req.timestamp.toDate()).toLocaleTimeString() : 'Just now';
+
         card.innerHTML = `
           <div style="display:flex; justify-content:space-between; align-items:center;">
             <div>
-              <h4 style="margin:0;">${req.studentName}</h4>
-              <p style="margin:5px 0 0 0; font-size:13px; color:#555;">Topic: <strong>${req.question}</strong></p>
+              <h4 style="margin:0; font-size:16px;">${req.studentName}</h4>
+              <p style="margin:4px 0 0 0; font-size:13px; color:#555;">Topic: <strong>${req.question}</strong></p>
+              <small style="color:#999; font-size:11px;">Joined: ${timeAgo}</small>
             </div>
-            <button class="btn btn-primary btn-sm" onclick="admitStudent('${doc.id}')">Admit</button>
+            <button class="btn btn-primary btn-sm" onclick="admitStudent('${doc.id}')">Accept</button>
           </div>
         `;
         container.appendChild(card);
@@ -933,108 +1037,167 @@ function listenToMyQueue() {
     });
 }
 
-// Alumni clicks "Admit" -> Updates status -> Student gets link
+// Accept Student
 async function admitStudent(studentId) {
   try {
     await db.collection('users').doc(currentUser.uid).collection('queue').doc(studentId).update({
       status: 'admitted'
     });
-    // Optional: Remove from UI immediately or let the snapshot listener handle it
+    // Visual feedback is handled by the snapshot listener removing the item from 'waiting' list
   } catch (error) {
     alert("Error admitting student: " + error.message);
   }
 }
 
-// --- STUDENT FUNCTIONS ---
+// ------------------------------------------
+// 3. STUDENT FUNCTIONS
+// ------------------------------------------
 
-document.getElementById('btnFindAlumni').addEventListener('click', async () => {
-  const question = document.getElementById('studentQuestion').value.trim();
+function listenForLiveAlumni() {
+  const container = document.getElementById('liveAlumniContainer');
+  
+  if (liveAlumniUnsubscribe) liveAlumniUnsubscribe();
+
+  // Query ALL users who are Alumni AND Live
+  liveAlumniUnsubscribe = db.collection('users')
+    .where('role', '==', 'alumni')
+    .where('isLive', '==', true)
+    .onSnapshot(snapshot => {
+      container.innerHTML = '';
+
+      // 🛑 CASE 1: NO ALUMNI ARE LIVE (The "Empty State")
+      if (snapshot.empty) {
+        container.innerHTML = `
+          <div style="text-align:center; padding:40px 20px; background:#f8f9fa; border-radius:12px; border:2px dashed #e5e7eb;">
+            <div style="font-size:40px; margin-bottom:10px;">☕</div>
+            <h3 style="color:#374151; margin-bottom:5px;">No Alumni are live right now</h3>
+            <p style="color:#6b7280; font-size:14px; margin-bottom:20px;">
+              Most alumni go live during evenings or weekends.<br>
+              While you wait, you can prepare your questions!
+            </p>
+            <button onclick="showView('feedView')" class="btn btn-secondary btn-sm">
+              📰 Read the News Feed
+            </button>
+          </div>`;
+        return;
+      }
+
+      // ✅ CASE 2: SHOW LIVE ALUMNI
+      snapshot.forEach(doc => {
+        const alumni = doc.data();
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.style.display = 'flex';
+        card.style.justifyContent = 'space-between';
+        card.style.alignItems = 'center';
+        card.style.marginBottom = '10px';
+        card.style.borderLeft = '4px solid #10b981'; // Green "Live" strip
+        
+        card.innerHTML = `
+          <div>
+            <h4 style="margin:0; font-size:16px;">${alumni.name}</h4>
+            <p style="margin:4px 0 0 0; font-size:12px; color:#666;">
+              ${alumni.jobTitle || 'Alumni'} @ ${alumni.company || 'Unknown'}
+            </p>
+            <div style="display:flex; align-items:center; gap:6px; margin-top:6px;">
+              <span class="status-dot" style="width:8px; height:8px; background:red; border-radius:50%; display:inline-block; animation: pulse 1.5s infinite;"></span>
+              <span style="font-size:11px; color:red; font-weight:bold; letter-spacing:0.5px;">LIVE NOW</span>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="joinSpecificQueue('${doc.id}', '${alumni.name}')">
+            Join Queue
+          </button>
+        `;
+        container.appendChild(card);
+      });
+    });
+}
+
+async function joinSpecificQueue(alumniId, alumniName) {
+  const inputField = document.getElementById('studentQuestion');
+  const question = inputField.value.trim();
+  
+  // 🛑 VALIDATION: Must write a question first
   if (!question) {
-    alert("Please enter a topic/question first!");
+    // Visual Feedback: Shake the input box & turn border red
+    inputField.style.border = "2px solid red";
+    inputField.style.transition = "0.1s";
+    
+    // Simple "Shake" animation using margin
+    setTimeout(() => inputField.style.transform = "translateX(5px)", 50);
+    setTimeout(() => inputField.style.transform = "translateX(-5px)", 100);
+    setTimeout(() => inputField.style.transform = "translateX(5px)", 150);
+    setTimeout(() => {
+      inputField.style.transform = "translateX(0)";
+      inputField.focus(); // Move cursor to the box
+    }, 200);
+
+    alert("⚠️ Please write your topic/question in the box above first!");
     return;
   }
 
-  const btn = document.getElementById('btnFindAlumni');
-  btn.disabled = true;
-  btn.textContent = "Searching...";
+  // Reset border style if it was red
+  inputField.style.border = "1px solid #ddd";
+
+  // UI: Show Waiting Room
+  document.getElementById('studentSearchArea').style.display = 'none';
+  document.getElementById('studentWaitingRoom').style.display = 'block';
+  document.getElementById('waitingText').innerHTML = `Waiting for <strong>${alumniName}</strong> to accept you...`;
 
   try {
-    // 1. Find ANY alumni who is live
-    const snapshot = await db.collection('users')
-      .where('role', '==', 'alumni')
-      .where('isLive', '==', true)
-      .limit(1) // Get just one for now (Roulette style)
-      .get();
-
-    if (snapshot.empty) {
-      alert("No alumni are live right now. Try again later!");
-      btn.disabled = false;
-      btn.textContent = "Find Live Alumni";
-      return;
-    }
-
-    // 2. Pick the alumni
-    const alumniDoc = snapshot.docs[0];
-    const alumniId = alumniDoc.id;
-    const alumniData = alumniDoc.data();
-
-    // 3. Create a Queue Request
+    // 1. Write to specific Alumni's queue
     await db.collection('users').doc(alumniId).collection('queue').doc(currentUser.uid).set({
       studentName: currentUser.name,
       studentId: currentUser.uid,
-      question: question,
+      question: question, // <--- THIS SAVES THE QUESTION
       status: 'waiting',
-      timestamp: firebase.firestore.FieldValue.serverTimestamp()
+      timestamp: new Date()
     });
 
-    // 4. Switch UI to Waiting Room
-    document.getElementById('studentSearchArea').style.display = 'none';
-    document.getElementById('studentWaitingRoom').style.display = 'block';
-    document.getElementById('waitingText').innerHTML = `Waiting for <strong>${alumniData.name}</strong> to let you in...`;
+    // 2. Listen specifically to THIS request for acceptance
+    myRequestUnsubscribe = db.collection('users').doc(alumniId).collection('queue').doc(currentUser.uid)
+      .onSnapshot(async (doc) => {
+        if (!doc.exists) return;
+        const data = doc.data();
 
-    // 5. Start listening for acceptance
-    listenForAdmission(alumniId);
+        if (data.status === 'admitted') {
+          const alumniUser = await db.collection('users').doc(alumniId).get();
+          const meetLink = alumniUser.data().meetLink;
+
+          const ticketDiv = document.getElementById('admissionTicket');
+          ticketDiv.innerHTML = `
+            <div class="alert alert-success" style="animation: popIn 0.5s;">
+              <strong>🎉 Accepted!</strong><br>
+              Topic: ${data.question}
+            </div>
+            <a href="${meetLink}" target="_blank" class="btn btn-primary full-width" 
+               style="text-decoration:none; display:block; text-align:center; padding:15px; font-weight:bold; font-size:18px;">
+               📹 JOIN GOOGLE MEET
+            </a>
+          `;
+          
+          document.querySelector('#studentWaitingRoom .spinner').style.display = 'none';
+          document.getElementById('waitingText').style.display = 'none';
+        }
+      });
 
   } catch (error) {
     console.error(error);
-    alert("Error: " + error.message);
-    btn.disabled = false;
-    btn.textContent = "Find Live Alumni";
+    alert("Error joining queue: " + error.message);
+    cancelRequest();
   }
-});
+}
 
-function listenForAdmission(alumniId) {
-  const unsubscribe = db.collection('users').doc(alumniId).collection('queue').doc(currentUser.uid)
-    .onSnapshot(async (doc) => {
-      if (!doc.exists) return;
-      
-      const data = doc.data();
-      
-      // 🎉 ADMITTED!
-      if (data.status === 'admitted') {
-        // Fetch the alumni's link again to be sure
-        const alumniUser = await db.collection('users').doc(alumniId).get();
-        const meetLink = alumniUser.data().meetLink;
-
-        // Show the JOIN button
-        const ticketDiv = document.getElementById('admissionTicket');
-        ticketDiv.innerHTML = `
-          <div class="alert alert-success">
-            <strong>✅ You are approved!</strong>
-          </div>
-          <a href="${meetLink}" target="_blank" class="btn btn-primary full-width" style="text-decoration:none; display:block; text-align:center;">
-            📹 JOIN VIDEO CALL NOW
-          </a>
-        `;
-        
-        // Stop spinner
-        document.querySelector('.spinner').style.display = 'none';
-        document.getElementById('waitingText').style.display = 'none';
-        
-        // Stop listening (optional, but good practice)
-        unsubscribe();
-      }
-    });
+async function cancelRequest() {
+  // Reset UI
+  document.getElementById('studentSearchArea').style.display = 'block';
+  document.getElementById('studentWaitingRoom').style.display = 'none';
+  document.getElementById('admissionTicket').innerHTML = '';
+  document.querySelector('#studentWaitingRoom .spinner').style.display = 'block';
+  document.getElementById('waitingText').style.display = 'block';
+  
+  // Stop listening to the request
+  if (myRequestUnsubscribe) myRequestUnsubscribe();
 }
 
 async function cancelRequest() {
@@ -1169,4 +1332,39 @@ function isCollegeEmail(email) {
 
   // Check if email ends with any of the college domains
   return collegeEmailDomains.some(domain => email.toLowerCase().endsWith(domain));
+}
+// ==========================================
+// PRESENCE SYSTEM (Fixes ReferenceError)
+// ==========================================
+function setupPresence() {
+  if (!currentUser) return;
+
+  // 1. Reference to Realtime Database (not Firestore)
+  // We store status at /status/USER_UID
+  const userStatusRef = rtdb.ref('/status/' + currentUser.uid);
+
+  // 2. Define what "offline" and "online" look like
+  const isOfflineForDatabase = {
+    state: 'offline',
+    last_changed: firebase.database.ServerValue.TIMESTAMP,
+  };
+
+  const isOnlineForDatabase = {
+    state: 'online',
+    last_changed: firebase.database.ServerValue.TIMESTAMP,
+  };
+
+  // 3. Hook into Firebase's native connection monitor
+  rtdb.ref('.info/connected').on('value', (snapshot) => {
+    // If we are not connected to Firebase network, do nothing
+    if (snapshot.val() == false) {
+      return;
+    }
+
+    // 4. When we disconnect (close tab), set status to offline automatically
+    userStatusRef.onDisconnect().set(isOfflineForDatabase).then(() => {
+      // 5. While we are here, set status to online
+      userStatusRef.set(isOnlineForDatabase);
+    });
+  });
 }
