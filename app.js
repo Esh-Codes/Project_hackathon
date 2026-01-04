@@ -4,6 +4,8 @@
 
 // 🔥 BVM Alumni Portal - Complete Firebase Logic (Compat SDK)
 // STEP 1: Replace firebaseConfig with YOUR credentials from Firebase Console
+let chatUsersUnsubscribe = null;
+let activeChatRef = null;
 
 const firebaseConfig = {
    apiKey: "AIzaSyDRPotcu3E1MZ7-PdkwHqqmD0Qr_tMeXFs",
@@ -31,11 +33,21 @@ let currentChatWith = null;
 // AUTH FUNCTIONS
 // ==========================================
 
-function switchTab(tab) {
+function switchTab(tab, event) {
   document.getElementById('loginForm').style.display = tab === 'login' ? 'block' : 'none';
   document.getElementById('registerForm').style.display = tab === 'register' ? 'block' : 'none';
   document.querySelectorAll('.auth-tab').forEach(t => t.classList.remove('active'));
-  event.target.classList.add('active');
+  if (event && event.target) {
+    event.target.classList.add('active');
+  } else {
+    // Fallback: activate the tab based on the tab parameter
+    document.querySelectorAll('.auth-tab').forEach(t => {
+      if ((tab === 'login' && t.textContent.trim().toLowerCase() === 'login') ||
+          (tab === 'register' && t.textContent.trim().toLowerCase() === 'register')) {
+        t.classList.add('active');
+      }
+    });
+  }
 }
 
 document.getElementById('regRole').addEventListener('change', function() {
@@ -73,8 +85,13 @@ async function registerUser() {
     const cred = await auth.createUserWithEmailAndPassword(email, password);
     const uid = cred.user.uid;
 
+    // Clean name to remove any role suffixes before storing
+    const cleanName = cleanUserName(name);
+
     let userData = {
-      email, role, name,
+      email, 
+      role, 
+      name: cleanName, // Store cleaned name
       verified: role === 'alumni' ? false : true,
       createdAt: new Date()
     };
@@ -109,7 +126,6 @@ async function loginUser() {
     return;
   }
 
-  // Student email validation
   if (role === 'student' && !isCollegeEmail(email)) {
     showAlert('loginAlert', '❌ Students must login with college email', 'error');
     return;
@@ -117,35 +133,44 @@ async function loginUser() {
 
   try {
     const cred = await auth.signInWithEmailAndPassword(email, password);
-    const userDoc = await db.collection('users').doc(cred.user.uid).get();
-    
+    const uid = cred.user.uid;
+
+    const userDoc = await db.collection('users').doc(uid).get();
+
     if (!userDoc.exists) {
       await auth.signOut();
-      showAlert('loginAlert', 'User account not found', 'error');
+      showAlert('loginAlert', 'Account data not found', 'error');
       return;
     }
 
     const userData = userDoc.data();
 
-    // 1. Check Role Match
+    // ❌ ROLE MISMATCH
     if (userData.role !== role) {
       await auth.signOut();
-      showAlert('loginAlert', 'Wrong role selected. Please check!', 'error');
+      showAlert('loginAlert', 'Wrong role selected', 'error');
       return;
     }
 
-    // 2. NEW: Check Alumni Verification Status
+    // 🚨 BLOCK ALUMNI UNTIL APPROVED
     if (role === 'alumni' && userData.verified === false) {
-      await auth.signOut(); // Sign them back out immediately
-      showAlert('loginAlert', '⏳ Your account is pending admin verification. Please wait.', 'warning');
+      await auth.signOut();
+      showAlert(
+        'loginAlert',
+        '⏳ Your account is waiting for admin approval. Please try later.',
+        'warning'
+      );
       return;
     }
-    
+
+    // ✅ ALLOWED LOGIN
     showAlert('loginAlert', '', 'success');
+
   } catch (error) {
     showAlert('loginAlert', error.message, 'error');
   }
 }
+
 
 
 async function logoutUser() {
@@ -154,6 +179,11 @@ async function logoutUser() {
   currentRole = null;
   document.getElementById('authSection').classList.remove('hidden');
   document.getElementById('mainContent').classList.add('hidden');
+  if (activeChatRef) {
+  activeChatRef.off();
+  activeChatRef = null;
+}
+
 }
 
 // Auth State Listener
@@ -162,7 +192,6 @@ auth.onAuthStateChanged(async (user) => {
   document.getElementById('loadingScreen').style.display = 'none';
 
   if (!user) {
-    // If no user is logged in, show auth screen and STOP.
     document.getElementById('authSection').classList.remove('hidden');
     document.getElementById('mainContent').classList.add('hidden');
     return;
@@ -175,28 +204,54 @@ auth.onAuthStateChanged(async (user) => {
       return;
     }
 
-    currentUser = { uid: user.uid, ...userDoc.data() };
+    const userData = userDoc.data();
+    // Ensure required fields exist with defaults and clean name
+    currentUser = { 
+      uid: user.uid, 
+      email: userData.email || '',
+      role: userData.role || 'student',
+      name: cleanUserName(userData.name || ''), // Clean name on load
+      verified: userData.verified !== undefined ? userData.verified : (userData.role === 'student'),
+      ...userData 
+    };
+    // Override name with cleaned version
+    currentUser.name = cleanUserName(currentUser.name || '');
     currentRole = currentUser.role;
 
+    // 🚨 SAFETY CHECK — BLOCK UNVERIFIED ALUMNI
+    if (currentRole === 'alumni' && currentUser.verified === false) {
+      await auth.signOut();
+
+      document.getElementById('authSection').classList.remove('hidden');
+      document.getElementById('mainContent').classList.add('hidden');
+
+      showAlert(
+        'loginAlert',
+        '⏳ Your account is waiting for admin approval.',
+        'warning'
+      );
+      return;
+    }
+
+    // ✅ ONLY APPROVED USERS REACH HERE
     document.getElementById('authSection').classList.add('hidden');
     document.getElementById('mainContent').classList.remove('hidden');
 
-    // ONLY call these once we are sure the user is logged in
     updateUI();
     loadFeed();
-    
-    // Specifically for the Chat dropdown error on line 635
-    if (currentRole === 'student') {
+
+    // Load chat recipients list (students see alumni, alumni see students)
+    if (currentRole === 'student' || currentRole === 'alumni') {
       loadChatAlumni();
     }
-    
-    // Setup presence for Office Hours
+
     setupPresence();
-    
+
   } catch (error) {
     console.error('Permission error during initial load:', error);
   }
 });
+
 
 // ==========================================
 // UI FUNCTIONS
@@ -237,8 +292,7 @@ function updateSidebar() {
     addMenuItem('👑 Admin', 'adminView');
   }
 
-  // Ensure chat list loads for everyone when they enter the portal
-  loadChatAlumni();
+  
 }
 
 function showView(viewId) {
@@ -248,6 +302,44 @@ function showView(viewId) {
   if (viewId === 'feedView') loadFeed();
   if (viewId === 'profileView') loadProfile();
   if (viewId === 'adminView') loadAdmin();
+  
+  // Show/hide roulette sections based on role
+  if (viewId === 'rouletteView') {
+    const alumniRoulette = document.getElementById('alumniRoulette');
+    const studentRoulette = document.getElementById('studentRoulette');
+    if (alumniRoulette) alumniRoulette.style.display = (currentRole === 'alumni') ? 'block' : 'none';
+    if (studentRoulette) studentRoulette.style.display = (currentRole === 'student') ? 'block' : 'none';
+  }
+  
+  // Initialize chat view
+  if (viewId === 'chatView') {
+    // If in private mode and no recipient selected, show placeholder
+    if (currentChatMode === 'private' && !currentChatWith) {
+      const messagesEl = document.getElementById('chatMessages');
+      const chatInput = document.getElementById('chatInput');
+      const btnSendMessage = document.getElementById('btnSendMessage');
+      if (messagesEl) {
+        messagesEl.innerHTML = '<p style="text-align:center; color:#999; padding:20px;">Select a recipient to start chatting</p>';
+      }
+      if (chatInput) chatInput.disabled = true;
+      if (btnSendMessage) btnSendMessage.disabled = true;
+    } else if (currentChatWith) {
+      // Reload messages if we have a chat session
+      const chatInput = document.getElementById('chatInput');
+      const btnSendMessage = document.getElementById('btnSendMessage');
+      if (chatInput) chatInput.disabled = false;
+      if (btnSendMessage) btnSendMessage.disabled = false;
+      loadChatMessages();
+    } else if (currentChatMode === 'group') {
+      // Auto-load group chat
+      currentChatWith = { id: 'global_group', name: 'Global Community' };
+      const chatInput = document.getElementById('chatInput');
+      const btnSendMessage = document.getElementById('btnSendMessage');
+      if (chatInput) chatInput.disabled = false;
+      if (btnSendMessage) btnSendMessage.disabled = false;
+      loadChatMessages();
+    }
+  }
 }
 
 function showAlert(elementId, message, type) {
@@ -280,16 +372,15 @@ async function loadFeed() {
         return;
       }
 
-      snapshot.forEach(async doc => {
+      // Use Promise.all to properly await all async operations
+      const postPromises = snapshot.docs.map(async doc => {
         const post = doc.data();
         const authorDoc = await db.collection('users').doc(post.authorId).get();
         const author = authorDoc.data();
 
         const card = document.createElement('div');
         card.className = 'card';
-        // Update the button logic inside the loadFeed loops in app.js
-// Find where post cards are created and use this button logic:
-card.innerHTML = `
+        card.innerHTML = `
   <h3>${post.title}</h3>
   <p>${post.description}</p>
   ${post.authorId === currentUser.uid 
@@ -297,8 +388,11 @@ card.innerHTML = `
     : `<button class="btn btn-primary" onclick="startChat('${post.authorId}', '${author.name}')">Chat with Author</button>`
   }
 `;
-        container.appendChild(card);
+        return card;
       });
+      
+      const cards = await Promise.all(postPromises);
+      cards.forEach(card => container.appendChild(card));
       
 
          } else if (currentRole === 'alumni') {
@@ -308,10 +402,9 @@ card.innerHTML = `
       container.innerHTML = '';
       let hasAnyPosts = false;
 
-      snapshot.forEach(async doc => {
+      // Use Promise.all to properly await all async operations
+      const postPromises = snapshot.docs.map(async doc => {
         const post = doc.data();
-        hasAnyPosts = true;
-        
         const authorDoc = await db.collection('users').doc(post.authorId).get();
         const author = authorDoc.data();
         
@@ -326,11 +419,14 @@ card.innerHTML = `
           <p>${post.description}</p>
           ${post.authorId === currentUser.uid ? `<button class="btn btn-danger" onclick="deletePost('${doc.id}')">Delete My Post</button>` : `<button class="btn btn-primary" onclick="startChat('${post.authorId}', '${author.name}')">Chat with ${author.name}</button>`}
         `;
-        container.appendChild(card);
+        return card;
       });
-
-      if (!hasAnyPosts) {
+      
+      const cards = await Promise.all(postPromises);
+      if (cards.length === 0) {
         container.innerHTML = '<p style="text-align:center; color:#999;">No posts yet. Create one!</p>';
+      } else {
+        cards.forEach(card => container.appendChild(card));
       }
 
 
@@ -344,7 +440,8 @@ card.innerHTML = `
         return;
       }
 
-      snapshot.forEach(async doc => {
+      // Use Promise.all to properly await all async operations
+      const postPromises = snapshot.docs.map(async doc => {
         const post = doc.data();
         const authorDoc = await db.collection('users').doc(post.authorId).get();
         const author = authorDoc.data();
@@ -364,8 +461,11 @@ card.innerHTML = `
           ${!post.approved ? `<button class="btn btn-primary" onclick="approvePost('${doc.id}')">Approve</button>` : ''}
           <button class="btn btn-danger" onclick="rejectPost('${doc.id}')">Reject</button>
         `;
-        container.appendChild(card);
+        return card;
       });
+      
+      const cards = await Promise.all(postPromises);
+      cards.forEach(card => container.appendChild(card));
     }
   } catch (error) {
     container.innerHTML = `<p style="color:red;">Error: ${error.message}</p>`;
@@ -420,27 +520,39 @@ async function loadProfile() {
   if (currentRole !== 'alumni') return;
 
   const user = currentUser;
-  document.getElementById('profName').value = user.name || '';
+  // Clean name to remove any role suffixes
+  const cleanName = cleanUserName(user.name || '');
+  document.getElementById('profName').value = cleanName;
   document.getElementById('profJobTitle').value = user.jobTitle || '';
   document.getElementById('profCompany').value = user.company || '';
-  document.getElementById('profSkills').value = (user.skills || []).join(', ');
-  document.getElementById('profInterests').value = (user.interests || []).join(', ');
+  // Filter out empty strings from arrays
+  document.getElementById('profSkills').value = (user.skills || []).filter(s => s && s.trim()).join(', ');
+  document.getElementById('profInterests').value = (user.interests || []).filter(i => i && i.trim()).join(', ');
 }
 
 document.getElementById('btnSaveProfile').addEventListener('click', async () => {
   try {
+    const name = document.getElementById('profName').value.trim();
+    const jobTitle = document.getElementById('profJobTitle').value.trim();
+    const company = document.getElementById('profCompany').value.trim();
+    const skills = document.getElementById('profSkills').value.split(',').map(s => s.trim()).filter(Boolean);
+    const interests = document.getElementById('profInterests').value.split(',').map(i => i.trim()).filter(Boolean);
+    
+    // Clean name before saving to ensure no role suffixes
+    const cleanName = cleanUserName(name);
+    
     await db.collection('users').doc(currentUser.uid).update({
-      name: document.getElementById('profName').value,
-      jobTitle: document.getElementById('profJobTitle').value,
-      company: document.getElementById('profCompany').value,
-      skills: document.getElementById('profSkills').value.split(',').map(s => s.trim()).filter(Boolean),
-      interests: document.getElementById('profInterests').value.split(',').map(i => i.trim()).filter(Boolean)
+      name: cleanName,
+      jobTitle: jobTitle || null, // Store null instead of empty string
+      company: company || null,
+      skills: skills.length > 0 ? skills : [], // Ensure array, not null
+      interests: interests.length > 0 ? interests : []
     });
     showAlert('profileAlert', 'Profile updated!', 'success');
-    // Update local state
-    currentUser.name = document.getElementById('profName').value;
-    currentUser.jobTitle = document.getElementById('profJobTitle').value;
-    currentUser.company = document.getElementById('profCompany').value;
+    // Update local state with cleaned name
+    currentUser.name = cleanName;
+    currentUser.jobTitle = jobTitle;
+    currentUser.company = company;
   } catch (error) {
     showAlert('profileAlert', error.message, 'error');
   }
@@ -458,180 +570,483 @@ document.getElementById('btnSaveProfile').addEventListener('click', async () => 
 let currentChatMode = 'private'; // 'private' or 'group'
 
 function switchChatMode(mode) {
+  // Disconnect previous listeners BEFORE changing mode
+  if (currentChatWith && currentUser) {
+    const oldPath = (currentChatMode === 'private') 
+      ? `messages/private/${[currentUser.uid, currentChatWith.id].sort().join('_')}`
+      : `messages/public/global_group`;
+    rtdb.ref(oldPath).off();
+  }
+  
   currentChatMode = mode;
   
   // UI Toggles
-  document.getElementById('btnPrivateTab').classList.toggle('active', mode === 'private');
-  document.getElementById('btnGroupTab').classList.toggle('active', mode === 'group');
-  document.getElementById('privateChatControls').style.display = (mode === 'private') ? 'block' : 'none';
+  const btnPrivateTab = document.getElementById('btnPrivateTab');
+  const btnGroupTab = document.getElementById('btnGroupTab');
+  const privateChatControls = document.getElementById('privateChatControls');
+  
+  if (btnPrivateTab) btnPrivateTab.classList.toggle('active', mode === 'private');
+  if (btnGroupTab) btnGroupTab.classList.toggle('active', mode === 'group');
+  if (privateChatControls) privateChatControls.style.display = (mode === 'private') ? 'block' : 'none';
   
   // Reset and Load
   const messagesEl = document.getElementById('chatMessages');
-  messagesEl.innerHTML = '';
+  if (messagesEl) messagesEl.innerHTML = '';
   
   if (mode === 'group') {
     currentChatWith = { id: 'global_group', name: 'Global Community' };
+    const chatInput = document.getElementById('chatInput');
+    const btnSendMessage = document.getElementById('btnSendMessage');
+    if (chatInput) chatInput.disabled = false;
+    if (btnSendMessage) btnSendMessage.disabled = false;
     loadChatMessages();
   } else {
-    currentChatWith = null;
+    // For private mode, check if there's a selected recipient
     const select = document.getElementById('chatSelect');
-    if (select.value) {
-      const alumniName = select.options[select.selectedIndex].text;
-      startChat(select.value, alumniName);
+    if (select && select.value) {
+      const recipientName = select.options[select.selectedIndex].text;
+      startChat(select.value, recipientName);
+    } else {
+      currentChatWith = null;
+      const chatInput = document.getElementById('chatInput');
+      const btnSendMessage = document.getElementById('btnSendMessage');
+      if (chatInput) chatInput.disabled = true;
+      if (btnSendMessage) btnSendMessage.disabled = true;
+      if (messagesEl) {
+        messagesEl.innerHTML = '<p style="text-align:center; color:#999; padding:20px;">Select a recipient to start chatting</p>';
+      }
     }
   }
 }
 
-async function startChat(alumniId, alumniName) {
-  currentChatWith = { id: alumniId, name: alumniName };
+async function startChat(recipientId, recipientName) {
+  currentChatWith = { id: recipientId, name: recipientName };
+  currentChatMode = 'private'; // Ensure we're in private mode
+  
+  // Update UI
+  const btnPrivateTab = document.getElementById('btnPrivateTab');
+  const btnGroupTab = document.getElementById('btnGroupTab');
+  if (btnPrivateTab) btnPrivateTab.classList.add('active');
+  if (btnGroupTab) btnGroupTab.classList.remove('active');
+  
+  // Enable input and send button
+  const chatInput = document.getElementById('chatInput');
+  const btnSendMessage = document.getElementById('btnSendMessage');
+  if (chatInput) chatInput.disabled = false;
+  if (btnSendMessage) btnSendMessage.disabled = false;
+  
   showView('chatView');
   loadChatMessages();
 }
 
 async function loadChatMessages() {
-  if (!currentChatWith) return;
+  if (!currentChatWith || !currentUser) {
+    const messagesEl = document.getElementById('chatMessages');
+    if (messagesEl) {
+      messagesEl.innerHTML =
+        '<p style="text-align:center; color:#999; padding:20px;">Select a recipient to start chatting</p>';
+    }
+    return;
+  }
 
-  // Pathing based on mode
-  const chatPath = (currentChatMode === 'private') 
-    ? `messages/private/${[currentUser.uid, currentChatWith.id].sort().join('_')}`
-    : `messages/public/global_group`;
+  // Determine chat path
+  const chatPath =
+    currentChatMode === 'private'
+      ? `messages/private/${[currentUser.uid, currentChatWith.id].sort().join('_')}`
+      : `messages/public/global_group`;
 
   const messagesEl = document.getElementById('chatMessages');
-  rtdb.ref(chatPath).off(); // Prevent duplicate listeners
+  if (!messagesEl) return;
 
-  rtdb.ref(chatPath).limitToLast(50).on('child_added', (snap) => {
-    const msg = snap.val();
-    const div = document.createElement('div');
-    div.className = msg.senderId === currentUser.uid ? 'msg-sent' : 'msg-received';
-    
-    // Group mode adds a sender name label
-    const senderLabel = (currentChatMode === 'group' && msg.senderId !== currentUser.uid) 
-      ? `<span class="msg-sender-name">${msg.senderName}</span>` 
-      : '';
+  // 🔥 DETACH PREVIOUS LISTENER (CRITICAL FIX)
+  if (activeChatRef) {
+    activeChatRef.off();
+    activeChatRef = null;
+  }
 
-    div.innerHTML = `
-      ${senderLabel}
-      <p>${msg.text}</p>
-      <span class="msg-time">${new Date(msg.time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-    `;
-    messagesEl.appendChild(div);
+  // 🔥 CREATE NEW REF AND STORE IT
+  activeChatRef = rtdb.ref(chatPath);
+
+  // Clear UI and show loading
+  messagesEl.innerHTML =
+    '<p style="text-align:center; color:#999; padding:20px;">Loading messages...</p>';
+
+  try {
+    // 🔹 Load existing messages ONCE
+    const snapshot = await activeChatRef.limitToLast(50).once('value');
+    messagesEl.innerHTML = '';
+
+    if (snapshot.exists()) {
+      const messages = [];
+
+      snapshot.forEach(child => {
+        messages.push({ key: child.key, ...child.val() });
+      });
+
+      // Sort messages by timestamp
+      messages.sort((a, b) => (a.time || 0) - (b.time || 0));
+
+      messages.forEach(msg => {
+        renderMessage(msg, messagesEl);
+      });
+
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    } else {
+      messagesEl.innerHTML =
+        '<p style="text-align:center; color:#999; padding:20px;">No messages yet. Start the conversation!</p>';
+    }
+  } catch (error) {
+    console.error('Error loading messages:', error);
+    messagesEl.innerHTML =
+      `<p style="text-align:center; color:red; padding:20px;">${error.message}</p>`;
+  }
+
+  // 🔥 ATTACH REAL-TIME LISTENER (ONLY ONCE)
+  activeChatRef.limitToLast(50).on('child_added', snap => {
+    const messagesEl = document.getElementById('chatMessages');
+    if (!messagesEl) return;
+
+    // Prevent duplicates
+    if (messagesEl.querySelector(`[data-msg-key="${snap.key}"]`)) return;
+
+    const msg = { key: snap.key, ...snap.val() };
+    renderMessage(msg, messagesEl);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   });
 }
+function renderMessage(msg, messagesEl) {
+  const div = document.createElement('div');
+  div.className =
+    msg.senderId === currentUser.uid ? 'msg-sent' : 'msg-received';
 
-document.getElementById('btnSendMessage').addEventListener('click', async () => {
-  const text = document.getElementById('chatInput').value.trim();
-  if (!text || !currentChatWith) return;
+  div.setAttribute('data-msg-key', msg.key);
+
+  const cleanSenderName = cleanUserName(msg.senderName || 'Unknown');
+
+  const senderLabel =
+    currentChatMode === 'group' && msg.senderId !== currentUser.uid
+      ? `<span class="msg-sender-name">${cleanSenderName}</span>`
+      : '';
+
+  div.innerHTML = `
+    ${senderLabel}
+    <p>${msg.text || ''}</p>
+    <span class="msg-time">
+      ${msg.time
+        ? new Date(msg.time).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+          })
+        : ''}
+    </span>
+  `;
+
+  messagesEl.appendChild(div);
+}
+
+
+// Send message function
+async function sendMessage() {
+  if (!currentUser || !currentChatWith) {
+    alert('Please select a recipient first');
+    return;
+  }
+  
+  const chatInput = document.getElementById('chatInput');
+  const text = chatInput.value.trim();
+  
+  if (!text) return;
 
   const chatPath = (currentChatMode === 'private') 
     ? `messages/private/${[currentUser.uid, currentChatWith.id].sort().join('_')}`
     : `messages/public/global_group`;
 
-  await rtdb.ref(chatPath).push({
-    senderId: currentUser.uid,
-    senderName: currentUser.name,
-    text,
-    time: Date.now()
-  });
+  try {
+    await rtdb.ref(chatPath).push({
+      senderId: currentUser.uid,
+      senderName: cleanUserName(currentUser.name), // Clean name before storing
+      text,
+      time: Date.now()
+    });
 
-  document.getElementById('chatInput').value = '';
+    chatInput.value = '';
+  } catch (error) {
+    console.error('Error sending message:', error);
+    alert('Failed to send message: ' + error.message);
+  }
+}
+
+// Set up send message button
+document.getElementById('btnSendMessage').addEventListener('click', sendMessage);
+
+// Add Enter key support for sending messages
+document.getElementById('chatInput').addEventListener('keypress', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
 });
 
-// Load alumni list for chat
+// Helper function to clean name by removing role suffixes
+function cleanUserName(name) {
+  if (!name) return name;
+  // Remove common role suffixes: (student), (alumni), (admin), etc.
+  return name.replace(/\s*\(student\)/gi, '')
+              .replace(/\s*\(alumni\)/gi, '')
+              .replace(/\s*\(admin\)/gi, '')
+              .trim();
+}
+
+// Load chat recipients list (students see alumni, alumni see students)
 async function loadChatAlumni() {
   const select = document.getElementById('chatSelect');
-  select.innerHTML = '<option value="">Select Alumni...</option>';
-  
-  const snapshot = await db.collection('users')
-    .where('role', '==', 'alumni')
-    .where('verified', '==', true)
-    .get();
+  if (!select) return;
 
-  snapshot.forEach(doc => {
-    const opt = document.createElement('option');
-    opt.value = doc.id;
-    opt.textContent = doc.data().name;
-    select.appendChild(opt);
-  });
+  // 🔥 STOP previous listener
+  if (chatUsersUnsubscribe) {
+    chatUsersUnsubscribe();
+    chatUsersUnsubscribe = null;
+  }
 
-  select.addEventListener('change', () => {
-    if (select.value) {
-      const alumni = snapshot.docs.find(d => d.id === select.value).data();
-      startChat(select.value, alumni.name);
-    }
+  // 🔥 CLEAR dropdown fully
+  select.innerHTML = '';
+
+  const defaultOption = document.createElement('option');
+  defaultOption.value = '';
+  defaultOption.textContent =
+    currentRole === 'student'
+      ? 'Select Alumni...'
+      : 'Select Student...';
+
+  select.appendChild(defaultOption);
+
+  // 🔐 STRICT role-based query
+  let query;
+
+  if (currentRole === 'student') {
+    query = db.collection('users')
+      .where('role', '==', 'alumni')
+      .where('verified', '==', true);
+  } else if (currentRole === 'alumni') {
+    query = db.collection('users')
+      .where('role', '==', 'student');
+  } else {
+    return; // admin shouldn't load chat list
+  }
+
+  // 🔥 SINGLE snapshot listener
+  chatUsersUnsubscribe = query.onSnapshot(snapshot => {
+    select.innerHTML = '';
+    select.appendChild(defaultOption);
+
+    snapshot.forEach(doc => {
+      if (doc.id === currentUser.uid) return;
+
+      const user = doc.data();
+
+      const option = document.createElement('option');
+      option.value = doc.id;
+      option.textContent = cleanUserName(user.name);
+
+      select.appendChild(option);
+    });
   });
 }
 
 // ==========================================
 // OFFICE HOURS ROULETTE
 // ==========================================
+// ==========================================
+// OFFICE HOURS ROULETTE (NO-API VERSION)
+// ==========================================
 
-function setupPresence() {
-  if (currentRole !== 'alumni') return;
+let queueListener = null; // To store the real-time listener
 
-  const presenceRef = rtdb.ref(`presence/${currentUser.uid}`);
-  presenceRef.onDisconnect().set({ state: 'offline', time: Date.now() });
-  presenceRef.set({ state: 'online', time: Date.now() });
-}
+// --- ALUMNI FUNCTIONS ---
 
 document.getElementById('btnUpdateLive').addEventListener('click', async () => {
   const isLive = document.getElementById('alumniLiveToggle').checked;
-  const question = document.getElementById('alumniDefaultQuestion').value.trim();
+  const meetLink = document.getElementById('alumniMeetLink').value.trim();
+
+  // Validation: Must have a link to go live
+  if (isLive && !meetLink) {
+    alert("❌ Please paste your Google Meet link first!");
+    document.getElementById('alumniLiveToggle').checked = false;
+    return;
+  }
 
   try {
+    // 1. Update User Status
     await db.collection('users').doc(currentUser.uid).update({
-      isLive,
-      defaultQuestion: question
+      isLive: isLive,
+      meetLink: meetLink || "" // Save the link so we can give it to students later
     });
 
-    await rtdb.ref(`liveAlumni/${currentUser.uid}`).set({
-      isLive,
-      name: currentUser.name,
-      updatedAt: Date.now()
-    });
+    if (isLive) {
+      alert('✅ You are now LIVE! Students can see you.');
+      listenToMyQueue(); // Start watching for students
+    } else {
+      alert('You are offline.');
+      if (queueListener) queueListener(); // Stop listening
+      document.getElementById('alumniQueueContainer').innerHTML = '<p style="color:#999; text-align:center;">You are offline.</p>';
+    }
 
-    alert(isLive ? '✅ You are now LIVE!' : '❌ You are offline');
   } catch (error) {
-    alert('Error: ' + error.message);
+    console.error(error);
+    alert('Error updating status: ' + error.message);
   }
 });
+
+// Real-time listener for the Alumni to see waiting students
+function listenToMyQueue() {
+  const container = document.getElementById('alumniQueueContainer');
+  
+  // Listen to the sub-collection 'queue' under this alumni
+  queueListener = db.collection('users').doc(currentUser.uid).collection('queue')
+    .where('status', '==', 'waiting') // Only show waiting students
+    .orderBy('timestamp', 'asc')
+    .onSnapshot(snapshot => {
+      container.innerHTML = '';
+      
+      if (snapshot.empty) {
+        container.innerHTML = '<p style="color:#999; text-align:center;">No students waiting yet.</p>';
+        return;
+      }
+
+      snapshot.forEach(doc => {
+        const req = doc.data();
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.style.background = '#f8f9fa';
+        card.style.marginBottom = '10px';
+        card.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <h4 style="margin:0;">${req.studentName}</h4>
+              <p style="margin:5px 0 0 0; font-size:13px; color:#555;">Topic: <strong>${req.question}</strong></p>
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="admitStudent('${doc.id}')">Admit</button>
+          </div>
+        `;
+        container.appendChild(card);
+      });
+    });
+}
+
+// Alumni clicks "Admit" -> Updates status -> Student gets link
+async function admitStudent(studentId) {
+  try {
+    await db.collection('users').doc(currentUser.uid).collection('queue').doc(studentId).update({
+      status: 'admitted'
+    });
+    // Optional: Remove from UI immediately or let the snapshot listener handle it
+  } catch (error) {
+    alert("Error admitting student: " + error.message);
+  }
+}
+
+// --- STUDENT FUNCTIONS ---
 
 document.getElementById('btnFindAlumni').addEventListener('click', async () => {
   const question = document.getElementById('studentQuestion').value.trim();
-  const statusDiv = document.getElementById('rouletteStatus');
-  statusDiv.innerHTML = '<p>Finding live alumni...</p>';
+  if (!question) {
+    alert("Please enter a topic/question first!");
+    return;
+  }
+
+  const btn = document.getElementById('btnFindAlumni');
+  btn.disabled = true;
+  btn.textContent = "Searching...";
 
   try {
+    // 1. Find ANY alumni who is live
     const snapshot = await db.collection('users')
       .where('role', '==', 'alumni')
-      .where('verified', '==', true)
       .where('isLive', '==', true)
+      .limit(1) // Get just one for now (Roulette style)
       .get();
 
     if (snapshot.empty) {
-      statusDiv.innerHTML = '<p style="color:#666;">No alumni live right now. Try again later!</p>';
+      alert("No alumni are live right now. Try again later!");
+      btn.disabled = false;
+      btn.textContent = "Find Live Alumni";
       return;
     }
 
-    const alumni = snapshot.docs[Math.floor(Math.random() * snapshot.docs.length)];
-    const alumniData = alumni.data();
+    // 2. Pick the alumni
+    const alumniDoc = snapshot.docs[0];
+    const alumniId = alumniDoc.id;
+    const alumniData = alumniDoc.data();
 
-    statusDiv.innerHTML = `
-      <p><strong>Matched with ${alumniData.name}</strong></p>
-      <p>Your question: ${question}</p>
-      <a href="https://meet.google.com/" target="_blank" class="btn btn-primary">Join 5-min Call</a>
-    `;
-
-    await db.collection('roulette_sessions').add({
+    // 3. Create a Queue Request
+    await db.collection('users').doc(alumniId).collection('queue').doc(currentUser.uid).set({
+      studentName: currentUser.name,
       studentId: currentUser.uid,
-      alumniId: alumni.id,
-      question,
-      timestamp: new Date()
+      question: question,
+      status: 'waiting',
+      timestamp: firebase.firestore.FieldValue.serverTimestamp()
     });
+
+    // 4. Switch UI to Waiting Room
+    document.getElementById('studentSearchArea').style.display = 'none';
+    document.getElementById('studentWaitingRoom').style.display = 'block';
+    document.getElementById('waitingText').innerHTML = `Waiting for <strong>${alumniData.name}</strong> to let you in...`;
+
+    // 5. Start listening for acceptance
+    listenForAdmission(alumniId);
+
   } catch (error) {
-    statusDiv.innerHTML = `<p style="color:red;">Error: ${error.message}</p>`;
+    console.error(error);
+    alert("Error: " + error.message);
+    btn.disabled = false;
+    btn.textContent = "Find Live Alumni";
   }
 });
+
+function listenForAdmission(alumniId) {
+  const unsubscribe = db.collection('users').doc(alumniId).collection('queue').doc(currentUser.uid)
+    .onSnapshot(async (doc) => {
+      if (!doc.exists) return;
+      
+      const data = doc.data();
+      
+      // 🎉 ADMITTED!
+      if (data.status === 'admitted') {
+        // Fetch the alumni's link again to be sure
+        const alumniUser = await db.collection('users').doc(alumniId).get();
+        const meetLink = alumniUser.data().meetLink;
+
+        // Show the JOIN button
+        const ticketDiv = document.getElementById('admissionTicket');
+        ticketDiv.innerHTML = `
+          <div class="alert alert-success">
+            <strong>✅ You are approved!</strong>
+          </div>
+          <a href="${meetLink}" target="_blank" class="btn btn-primary full-width" style="text-decoration:none; display:block; text-align:center;">
+            📹 JOIN VIDEO CALL NOW
+          </a>
+        `;
+        
+        // Stop spinner
+        document.querySelector('.spinner').style.display = 'none';
+        document.getElementById('waitingText').style.display = 'none';
+        
+        // Stop listening (optional, but good practice)
+        unsubscribe();
+      }
+    });
+}
+
+async function cancelRequest() {
+  // Reset UI
+  document.getElementById('studentSearchArea').style.display = 'block';
+  document.getElementById('studentWaitingRoom').style.display = 'none';
+  document.getElementById('btnFindAlumni').disabled = false;
+  document.getElementById('btnFindAlumni').textContent = "Find Live Alumni";
+  document.getElementById('admissionTicket').innerHTML = '';
+  document.querySelector('.spinner').style.display = 'block';
+  // Note: ideally we would delete the doc from Firestore here too, but for hackathon this is fine.
+}
 
 // ==========================================
 // ADMIN FUNCTIONS
@@ -674,7 +1089,8 @@ async function loadAdmin() {
     if (postsSnapshot.empty) {
       allPostsDiv.innerHTML = '<p style="color:#999;">No posts</p>';
     } else {
-      postsSnapshot.forEach(async doc => {
+      // Use Promise.all to properly await all async operations
+      const postPromises = postsSnapshot.docs.map(async doc => {
         const post = doc.data();
         const authorDoc = await db.collection('users').doc(post.authorId).get();
         const author = authorDoc.data();
@@ -687,8 +1103,11 @@ async function loadAdmin() {
           <p>${post.description}</p>
           <button class="btn btn-danger" onclick="rejectPost('${doc.id}')">❌ Delete (Irrelevant)</button>
         `;
-        allPostsDiv.appendChild(div);
+        return div;
       });
+      
+      const divs = await Promise.all(postPromises);
+      divs.forEach(div => allPostsDiv.appendChild(div));
     }
 
   } catch (error) {
@@ -732,13 +1151,8 @@ document.getElementById('btnLogin').addEventListener('click', loginUser);
 document.getElementById('btnLogout').addEventListener('click', logoutUser);
 document.getElementById('btnLogoutSidebar').addEventListener('click', logoutUser);
 
-// Initialize on load
-window.addEventListener('load', () => {
-  setupPresence();
-  if (currentRole === 'student') {
-    loadChatAlumni();
-  }
-});
+// Note: setupPresence() and loadChatAlumni() are now called in auth.onAuthStateChanged
+// after user authentication is confirmed, so we don't need to call them here
 // ==========================================
 // EMAIL VALIDATION FUNCTION
 // ==========================================
