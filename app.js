@@ -207,6 +207,7 @@ function updateUI() {
   updateSidebar();
 }
 
+// Replace the updateSidebar function in app.js
 function updateSidebar() {
   const menu = document.getElementById('sidebarMenu');
   menu.innerHTML = '';
@@ -220,6 +221,7 @@ function updateSidebar() {
   };
 
   addMenuItem('📋 Feed', 'feedView');
+  addMenuItem('💬 Chat', 'chatView'); // Now visible to Student, Alumni, and Admin
 
   if (currentRole === 'alumni') {
     addMenuItem('✍️ Create Post', 'createPostView');
@@ -228,7 +230,6 @@ function updateSidebar() {
   }
 
   if (currentRole === 'student') {
-    addMenuItem('💬 Chat', 'chatView');
     addMenuItem('🎯 Office Hours', 'rouletteView');
   }
 
@@ -236,15 +237,8 @@ function updateSidebar() {
     addMenuItem('👑 Admin', 'adminView');
   }
 
-  document.getElementById('filterSection').style.display = currentRole === 'student' ? 'block' : 'none';
-
-  if (currentRole === 'alumni') {
-    document.getElementById('alumniRoulette').style.display = 'block';
-    document.getElementById('studentRoulette').style.display = 'none';
-  } else if (currentRole === 'student') {
-    document.getElementById('alumniRoulette').style.display = 'none';
-    document.getElementById('studentRoulette').style.display = 'block';
-  }
+  // Ensure chat list loads for everyone when they enter the portal
+  loadChatAlumni();
 }
 
 function showView(viewId) {
@@ -293,14 +287,19 @@ async function loadFeed() {
 
         const card = document.createElement('div');
         card.className = 'card';
-        card.innerHTML = `
-          <h3>${post.title}</h3>
-          <p style="color:#666; font-size:12px;">By <strong>${author.name}</strong> | ${post.type.toUpperCase()} | ✓ Approved</p>
-          <p>${post.description}</p>
-          <button class="btn btn-primary" onclick="startChat('${post.authorId}', '${author.name}')">Chat with ${author.name}</button>
-        `;
+        // Update the button logic inside the loadFeed loops in app.js
+// Find where post cards are created and use this button logic:
+card.innerHTML = `
+  <h3>${post.title}</h3>
+  <p>${post.description}</p>
+  ${post.authorId === currentUser.uid 
+    ? `<button class="btn btn-danger" onclick="deletePost('${doc.id}')">Delete My Post</button>` 
+    : `<button class="btn btn-primary" onclick="startChat('${post.authorId}', '${author.name}')">Chat with Author</button>`
+  }
+`;
         container.appendChild(card);
       });
+      
 
          } else if (currentRole === 'alumni') {
       // ALUMNI: See ALL published posts (all auto-approved now)

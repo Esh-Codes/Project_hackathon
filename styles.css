@@ -1521,3 +1521,19 @@ textarea.form-input {
     font-size: var(--font-size-sm);
   }
 }
+/* --- Add these to the end of styles.css --- */
+
+/* Force white text in sent bubbles for high contrast */
+.msg-sent, .msg-sent p {
+  color: #ffffff !important; 
+}
+
+/* Brighten the sender name for Group Chat visibility */
+.msg-sender-name {
+  color: var(--color-teal-300) !important; 
+}
+
+/* Ensure the time in sent messages is readable */
+.msg-sent .msg-time {
+  color: rgba(255, 255, 255, 0.8) !important;
+}
